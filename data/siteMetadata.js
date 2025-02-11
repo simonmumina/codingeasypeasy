@@ -7,7 +7,7 @@ const siteMetadata = {
     'CodingEasyPeasy is a blog for programmers and mathematicians. It includes quizzes and articles about programming and mathematics that are thoughtfully written, well-explained, and well written.',
   language: 'en',
   theme: 'system', // system, dark or light
-  siteUrl: 'https://www.codingeasypeasy.com/',
+  siteUrl: 'https://www.codingeasypeasy.com',
   siteRepo: 'https://github.com/CodingEasyPeasy',
   siteLogo: '/static/images/logo.png',
   socialBanner: '/static/images/twitter-card.png',
