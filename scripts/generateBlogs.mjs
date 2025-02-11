@@ -131,6 +131,6 @@ async function run() {
   return
 }
 
-setInterval(() => {
-  run();
-}, 10000)
+// setInterval(() => {
+//   run();
+// }, 10000)

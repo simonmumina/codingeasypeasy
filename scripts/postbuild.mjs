@@ -4,6 +4,4 @@ async function postbuild() {
   await rss()
 }
 
-setInterval(() => {
-  postbuild();
-}, 3600000)
+postbuild()
