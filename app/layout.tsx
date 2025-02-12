@@ -95,6 +95,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fff" />
       <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000" />
       <link rel="alternate" type="application/rss+xml" href={`${basePath}/feed.xml`} />
+      <meta
+        name="keywords"
+        content="Wordpress, Data Structures, Algorithms, Python, Flask, Django, Java, C, C++, JavaScript, Android Development, SQL, Data Science, Machine Learning, PHP, Web Development, System Design, Tutorial, Technical Blogs, Interview Experience, Interview Preparation, Programming, Competitive Programming, HTML, CSS, Bootstrap, Tailwind Css, React, React Native, NextJs, VueJs, NuxtJs, NodeJS, Express, Quiz, Computer Science, Programming Examples, Puzzles, Mathematics"
+      />
+      <meta name="google-adsense-account" content="ca-pub-6400001587606945" />
+
       <body className="bg-white pl-[calc(100vw-100%)] text-black antialiased dark:bg-gray-950 dark:text-white">
         <ThemeProviders>
           <Analytics analyticsConfig={siteMetadata.analytics as AnalyticsConfig} />
