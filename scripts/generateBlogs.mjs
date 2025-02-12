@@ -66,21 +66,10 @@ const topics = [
   'any NPM package',
 ]
 
-// function shuffleArray(array) {
-//   for (let i = array.length - 1; i > 0; i--) {
-//     const j = Math.floor(Math.random() * (i + 1))
-//     ;[array[i], array[j]] = [array[j], array[i]]
-//   }
-// }
-
-// shuffleArray(topics)
-
-// let t = topics[0]
-
 console.log(topics[topics.length - 1])
 
 const prompt = `
-generate a long, detailed and seo friendly MDX blog post on anything about Javascript for concepts like variables, functions e.t.c, Make sure to choose a specific topic in Javascript and write about it don't generalise the whole Javascript Language.Include code examples where appropriate. The MDX should be ready to be saved to a file and should include title which is optimised for search engines, date, lastmod, tags which are optimised for search engines, draft with default as false, summary which is optimised for search engines, and author as default for example:
+generate a long, detailed and seo friendly MDX blog post on anything about AI. Include code examples where appropriate. The MDX should be ready to be saved to a file and should include title which is optimised for search engines, date, lastmod, tags which are optimised for search engines, draft with default as false, summary which is optimised for search engines, and author as default for example:
 ---
 title: 'Title of blog'
 date: '2021-01-12'
@@ -92,7 +81,6 @@ authors: ['default']
 ---
 `
 async function run() {
-  console.log("called")
   const chatSession = model.startChat({
     generationConfig,
     history: [],
@@ -131,6 +119,4 @@ async function run() {
   return
 }
 
-// setInterval(() => {
-//   run();
-// }, 10000)
+run();

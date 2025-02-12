@@ -4,7 +4,7 @@ const siteMetadata = {
   author: 'CodingEasyPeasy',
   headerTitle: 'CodingEasyPeasy',
   description:
-    'CodingEasyPeasy is a blog for programmers and mathematicians. It includes quizzes and articles about programming and mathematics that are thoughtfully written, well-explained, and well written.',
+    'Master programming and mathematics with CodingEasyPeasy. Our blog features well-written articles and tutorials on programming languages, e.g., Python, Java, C++, Javascript, PHP e.t.c and mathematical areas e.g., calculus, linear algebra, discrete math e.t.c.  Perfect for programmers, mathematicians, students, and anyone looking to deepen their understanding. Learn through clear explanations and practical examples.',
   language: 'en',
   theme: 'system', // system, dark or light
   siteUrl: 'https://www.codingeasypeasy.com',
