@@ -88,7 +88,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <link rel="manifest" href={`${basePath}/static/favicons/site.webmanifest`} />
       <link
         rel="mask-icon"
-        href={`${basePath}/static/favicons/safari-pinned-tab.svg`}
+        href={`${basePath}/static/favicons/safari-pinned-tab.png`}
         color="#5bbad5"
       />
       <meta name="msapplication-TileColor" content="#000000" />
