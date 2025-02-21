@@ -1,7 +1,7 @@
 import { slug } from 'github-slugger'
 import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 import ListLayout from '@/layouts/ListLayoutWithTags'
-import { allBlogs } from 'contentlayer/generated'
+import { allBlogs } from 'utils/helpers'
 import tagData from 'app/tag-data.json'
 import { notFound } from 'next/navigation'
 
