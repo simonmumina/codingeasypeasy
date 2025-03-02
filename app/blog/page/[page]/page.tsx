@@ -3,6 +3,8 @@ import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 import { allBlogs } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 
+export const revalidate = 60;
+
 const POSTS_PER_PAGE = 5
 
 export const generateStaticParams = async () => {

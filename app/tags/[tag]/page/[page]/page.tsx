@@ -5,6 +5,8 @@ import { allBlogs } from 'contentlayer/generated'
 import tagData from 'app/tag-data.json'
 import { notFound } from 'next/navigation'
 
+export const revalidate = 60;
+
 const POSTS_PER_PAGE = 5
 
 export const generateStaticParams = async () => {
