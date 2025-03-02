@@ -64,6 +64,11 @@ const unoptimized = process.env.UNOPTIMIZED ? true : undefined
 module.exports = () => {
   const plugins = [withContentlayer, withBundleAnalyzer]
   return plugins.reduce((acc, next) => next(acc), {
+    productionBrowserSourceMaps: false,
+    experimental: {
+      serverSourceMaps: false,
+      webpackMemoryOptimizations: true,
+    },
     output,
     basePath,
     reactStrictMode: true,
