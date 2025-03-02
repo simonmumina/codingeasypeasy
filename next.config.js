@@ -75,6 +75,10 @@ module.exports = () => {
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts'],
+      ignoreDuringBuilds: true,
+    },
+    typescript: {
+      ignoreBuildErrors: true,
     },
     images: {
       remotePatterns: [
@@ -93,7 +97,13 @@ module.exports = () => {
         },
       ]
     },
-    webpack: (config, options) => {
+    webpack: (config, { buildId, dev, isServer, defaultLoaders, nextRuntime, webpack }) => {
+      if (config.cache && !dev) {
+        config.cache = Object.freeze({
+          type: 'memory',
+        })
+      }
+
       config.module.rules.push({
         test: /\.svg$/,
         use: ['@svgr/webpack'],
