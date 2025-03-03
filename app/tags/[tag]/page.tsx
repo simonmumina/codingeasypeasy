@@ -7,9 +7,9 @@ import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 import { Metadata } from 'next'
 
-export const dynamic = 'force-dynamic'
-
 export const revalidate = 60
+
+export const dynamicParams = true
 
 const POSTS_PER_PAGE = 50
 

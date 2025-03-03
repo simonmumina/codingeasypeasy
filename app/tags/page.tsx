@@ -4,9 +4,9 @@ import { slug } from 'github-slugger'
 import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 
-export const dynamic = 'force-dynamic'
-
 export const revalidate = 60
+
+export const dynamicParams = true
 
 export const maxDuration = 800
 
