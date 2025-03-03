@@ -5,9 +5,9 @@ import { allBlogs } from 'contentlayer/generated'
 import tagData from 'app/tag-data.json'
 import { notFound } from 'next/navigation'
 
-export const revalidate = 60;
+export const maxDuration = 800
 
-const POSTS_PER_PAGE = 5
+const POSTS_PER_PAGE = 50
 
 export const generateStaticParams = async () => {
   const tagCounts = tagData as Record<string, number>
@@ -24,7 +24,7 @@ export const generateStaticParams = async () => {
 export default async function TagPage(props: { params: Promise<{ tag: string; page: string }> }) {
   const params = await props.params
   const tag = decodeURI(params.tag)
-  const title = tag[0].toUpperCase() + tag.split(' ').join('-').slice(1)
+  const title = tag[0]?.toUpperCase() + tag.split(' ').join('-').slice(1)
   const pageNumber = parseInt(params.page)
   const filteredPosts = allCoreContent(
     sortPosts(allBlogs.filter((post) => post.tags && post.tags.map((t) => slug(t)).includes(tag)))

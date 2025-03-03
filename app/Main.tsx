@@ -3,7 +3,9 @@ import Tag from '@/components/Tag'
 import siteMetadata from '@/data/siteMetadata'
 import { formatDate } from 'pliny/utils/formatDate'
 
-const MAX_DISPLAY = 5
+export const maxDuration = 800
+
+const MAX_DISPLAY = 50
 
 export default function Home({ posts }) {
   return (

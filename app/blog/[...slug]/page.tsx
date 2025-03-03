@@ -11,6 +11,8 @@ import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
 import { notFound } from 'next/navigation'
 
+export const maxDuration = 800
+
 const defaultLayout = 'PostLayout'
 const layouts = {
   PostLayout,
