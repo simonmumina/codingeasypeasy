@@ -6,8 +6,6 @@ import { genPageMetadata } from 'app/seo'
 
 export const revalidate = 60
 
-export const dynamicParams = true
-
 export const maxDuration = 800
 
 export const metadata = genPageMetadata({ title: 'Tags', description: 'CodingEasyPeasy Tags' })

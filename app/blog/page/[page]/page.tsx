@@ -11,12 +11,12 @@ export const maxDuration = 800
 
 const POSTS_PER_PAGE = 50
 
-export const generateStaticParams = async () => {
-  const totalPages = Math.ceil(allBlogs.length / POSTS_PER_PAGE)
-  const paths = Array.from({ length: totalPages }, (_, i) => ({ page: (i + 1).toString() }))
+// export const generateStaticParams = async () => {
+//   const totalPages = Math.ceil(allBlogs.length / POSTS_PER_PAGE)
+//   const paths = Array.from({ length: totalPages }, (_, i) => ({ page: (i + 1).toString() }))
 
-  return paths
-}
+//   return paths
+// }
 
 export default async function Page(props: { params: Promise<{ page: string }> }) {
   const params = await props.params
