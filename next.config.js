@@ -68,7 +68,6 @@ module.exports = () => {
     experimental: {
       serverSourceMaps: false,
       webpackMemoryOptimizations: true,
-      outputFileTracing: true,
     },
     output,
     basePath,
