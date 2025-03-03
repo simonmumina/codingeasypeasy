@@ -7,6 +7,10 @@ import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 import { Metadata } from 'next'
 
+export const dynamic = 'force-dynamic'
+
+export const revalidate = 60
+
 const POSTS_PER_PAGE = 50
 
 export async function generateMetadata(props: {

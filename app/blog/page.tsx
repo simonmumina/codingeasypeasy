@@ -3,6 +3,10 @@ import { allBlogs } from 'contentlayer/generated'
 import { genPageMetadata } from 'app/seo'
 import ListLayout from '@/layouts/ListLayoutWithTags'
 
+export const dynamic = 'force-dynamic'
+
+export const revalidate = 60
+
 export const maxDuration = 800
 
 const POSTS_PER_PAGE = 50
