@@ -94,12 +94,6 @@ module.exports = () => {
       ]
     },
     webpack: (config, { buildId, dev, isServer, defaultLoaders, nextRuntime, webpack }) => {
-      if (config.cache && !dev) {
-        config.cache = Object.freeze({
-          type: 'memory',
-        })
-      }
-
       config.module.rules.push({
         test: /\.svg$/,
         use: ['@svgr/webpack'],
