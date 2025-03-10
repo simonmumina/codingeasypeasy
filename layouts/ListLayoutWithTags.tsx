@@ -102,7 +102,7 @@ export default function ListLayoutWithTags({
                 </Link>
               )}
               <ul>
-                {sortedTags.map((t) => {
+                {sortedTags?.slice(0, 50)?.map((t) => {
                   return (
                     <li key={t} className="my-3">
                       {decodeURI(pathname.split('/tags/')[1]) === slug(t) ? (
@@ -122,6 +122,13 @@ export default function ListLayoutWithTags({
                   )
                 })}
               </ul>
+
+              <Link
+                href={`/tags`}
+                className="hover:text-primary-700 dark:hover:text-primary-700 font-bold text-primary-500 uppercase dark:text-primary-500 underline"
+              >
+                View More
+              </Link>
             </div>
           </div>
           <div>

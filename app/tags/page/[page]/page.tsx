@@ -1,20 +1,37 @@
-import tagData from 'app/tag-data.json'
-import { genPageMetadata } from 'app/seo'
 import TagsLayout from '@/layouts/TagsLayout'
+import tagData from 'app/tag-data.json'
+import { notFound } from 'next/navigation'
 
 export const revalidate = 60
 
+export const dynamicParams = true
+
 const POSTS_PER_PAGE = 25
 
-export const metadata = genPageMetadata({ title: 'Tags', description: 'CodingEasyPeasy Tags' })
+// export const generateStaticParams = async () => {
+//   const totalPages = Math.ceil(tagData.length / POSTS_PER_PAGE)
+//   const paths = Array.from({ length: totalPages }, (_, i) => ({ page: (i + 1).toString() }))
 
-export default async function Page(props: { searchParams: Promise<{ page: string }> }) {
+//   return paths
+// }
+
+export default async function Page(props: { params: Promise<{ page: string }> }) {
+  const params = await props.params
   const tagCounts = tagData as Record<string, number>
   const tagKeys = Object.keys(tagCounts)
   const sortedTags = tagKeys.sort((a, b) => tagCounts[b] - tagCounts[a])
-  const pageNumber = 1
+
+  const pageNumber = parseInt(params.page as string)
   const totalPages = Math.ceil(sortedTags.length / POSTS_PER_PAGE)
-  const initialDisplayPosts = sortedTags.slice(0, POSTS_PER_PAGE * pageNumber)
+
+  // Return 404 for invalid page numbers or empty pages
+  if (pageNumber <= 0 || pageNumber > totalPages || isNaN(pageNumber)) {
+    return notFound()
+  }
+  const initialDisplayPosts = sortedTags.slice(
+    POSTS_PER_PAGE * (pageNumber - 1),
+    POSTS_PER_PAGE * pageNumber
+  )
   const pagination = {
     currentPage: pageNumber,
     totalPages: totalPages,
