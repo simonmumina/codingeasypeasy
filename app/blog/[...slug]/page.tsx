@@ -11,10 +11,6 @@ import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
 import { notFound } from 'next/navigation'
 
-export const revalidate = 60
-
-export const dynamicParams = true
-
 const defaultLayout = 'PostLayout'
 const layouts = {
   PostLayout,
@@ -72,9 +68,9 @@ export async function generateMetadata(props: {
   }
 }
 
-// export const generateStaticParams = async () => {
-//   return allBlogs.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
-// }
+export const generateStaticParams = async () => {
+  return allBlogs.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
+}
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
   const params = await props.params

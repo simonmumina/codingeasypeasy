@@ -7,10 +7,6 @@ import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 import { Metadata } from 'next'
 
-export const revalidate = 60
-
-export const dynamicParams = true
-
 const POSTS_PER_PAGE = 5
 
 export async function generateMetadata(props: {
@@ -30,13 +26,13 @@ export async function generateMetadata(props: {
   })
 }
 
-// export const generateStaticParams = async () => {
-//   const tagCounts = tagData as Record<string, number>
-//   const tagKeys = Object.keys(tagCounts)
-//   return tagKeys.map((tag) => ({
-//     tag: encodeURI(tag),
-//   }))
-// }
+export const generateStaticParams = async () => {
+  const tagCounts = tagData as Record<string, number>
+  const tagKeys = Object.keys(tagCounts)
+  return tagKeys.map((tag) => ({
+    tag: encodeURI(tag),
+  }))
+}
 
 export default async function TagPage(props: { params: Promise<{ tag: string }> }) {
   const params = await props.params
