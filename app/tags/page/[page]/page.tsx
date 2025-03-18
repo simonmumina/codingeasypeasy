@@ -2,10 +2,6 @@ import TagsLayout from '@/layouts/TagsLayout'
 import tagData from 'app/tag-data.json'
 import { notFound } from 'next/navigation'
 
-export const revalidate = 60
-
-export const dynamicParams = true
-
 const POSTS_PER_PAGE = 25
 
 export const generateStaticParams = async () => {

@@ -2,10 +2,6 @@ import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 import TagsLayout from '@/layouts/TagsLayout'
 
-export const revalidate = 60
-
-export const dynamicParams = true
-
 const POSTS_PER_PAGE = 25
 
 export const metadata = genPageMetadata({ title: 'Tags', description: 'CodingEasyPeasy Tags' })
