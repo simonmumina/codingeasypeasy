@@ -68,6 +68,9 @@ module.exports = () => {
     basePath,
     reactStrictMode: true,
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
+    experimental: {
+      webpackMemoryOptimizations: true,
+    },
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts'],
     },
