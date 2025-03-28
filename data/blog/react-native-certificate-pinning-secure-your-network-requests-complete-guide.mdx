@@ -1,0 +1,768 @@
+---
+title: 'React Native Certificate Pinning: Secure Your Network Requests (Complete Guide)'
+date: '2024-10-26'
+lastmod: '2024-10-26'
+tags: ['react-native', 'security', 'certificate pinning', 'network requests', 'mobile security', 'okhttp', 'trustkit']
+draft: false
+summary: 'Learn how to implement certificate pinning in your React Native application to protect against man-in-the-middle (MITM) attacks and ensure secure communication with your backend servers. This comprehensive guide covers different approaches, including native modules, third-party libraries, and best practices.'
+authors: ['default']
+---
+
+# React Native Certificate Pinning: Secure Your Network Requests (Complete Guide)
+
+In today's digital landscape, security is paramount, especially when dealing with sensitive data in mobile applications.  One crucial aspect of mobile security is ensuring the integrity and authenticity of network communication between your app and your backend servers.  This is where certificate pinning comes in.
+
+Certificate pinning is a security technique that enhances the trustworthiness of HTTPS connections by associating a host with its expected X.509 certificate or public key.  This helps to prevent Man-in-the-Middle (MITM) attacks, where malicious actors intercept and potentially alter communication between your app and the server.
+
+This comprehensive guide will walk you through the process of implementing certificate pinning in your React Native application, covering various approaches and best practices.
+
+## Why Certificate Pinning?
+
+Before diving into the implementation details, let's understand why certificate pinning is essential:
+
+* **Protection against MITM Attacks:** Certificate pinning prevents attackers from using forged or compromised certificates to intercept and decrypt your app's network traffic.
+* **Enhanced Security:** It adds an extra layer of security on top of standard HTTPS encryption.
+* **Trust and Confidence:** By verifying the server's certificate, you can be more confident that you are communicating with the intended server.
+
+## Approaches to Certificate Pinning in React Native
+
+There are several ways to implement certificate pinning in React Native:
+
+1. **Using Native Modules (Android & iOS):** This approach involves writing native code for both Android (Java/Kotlin) and iOS (Swift/Objective-C) to handle certificate pinning at the platform level.
+2. **Using `react-native-ssl-pinning`:** A popular third-party library that simplifies the implementation process and provides a cross-platform solution.
+3. **Using `trustkit-react-native` (iOS Only):**  Leverages the TrustKit framework for robust certificate pinning on iOS.
+
+Let's explore each approach in detail.
+
+## 1. Implementing Certificate Pinning with Native Modules
+
+This approach offers the most control and flexibility but requires writing platform-specific code.
+
+### Android (using OkHttp)
+
+Android uses the OkHttp library for making network requests. We can leverage OkHttp's certificate pinning capabilities by creating a custom OkHttpClient.
+
+**Step 1: Create an Android Native Module**
+
+First, create an Android native module in your React Native project. Refer to the React Native documentation for details on creating native modules.  Here's a simplified example:
+
+```java
+// MyCertificatePinnerModule.java
+
+package com.your_app_name;
+
+import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.bridge.ReactContextBaseJavaModule;
+import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.Promise;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
+
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.CertificatePinner;
+
+public class MyCertificatePinnerModule extends ReactContextBaseJavaModule {
+
+    private static ReactApplicationContext reactContext;
+
+    MyCertificatePinnerModule(ReactApplicationContext context) {
+        super(context);
+        reactContext = context;
+    }
+
+    @Override
+    public String getName() {
+        return "MyCertificatePinner";
+    }
+
+    @ReactMethod
+    public void makePinnedRequest(String url, String hostname, String pin, Promise promise) {
+        try {
+            OkHttpClient client = new OkHttpClient.Builder()
+                    .certificatePinner(
+                            new CertificatePinner.Builder()
+                                    .add(hostname, pin)
+                                    .build())
+                    .build();
+
+
+            Request request = new Request.Builder().url(url).build();
+
+            client.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    promise.reject("Request Failed", e.getMessage());
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) throws IOException {
+                    if (response.isSuccessful()) {
+                        promise.resolve(response.body().string());
+                    } else {
+                        promise.reject("Request Failed", "Response code: " + response.code());
+                    }
+                }
+            });
+
+
+        } catch (Exception e) {
+            promise.reject("Error during request", e.getMessage());
+        }
+    }
+
+    // Example using certificate
+    @ReactMethod
+    public void makePinnedRequestWithCertificate(String url, String hostname, String certificateAlias, Promise promise) {
+        try {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+
+            // Load certificate from assets
+            InputStream caInput = reactContext.getAssets().open(certificateAlias);
+            Certificate ca;
+            try {
+                ca = cf.generateCertificate(caInput);
+                System.out.println("ca=" + ((java.security.cert.X509Certificate) ca).getSubjectDN());
+            } finally {
+                caInput.close();
+            }
+
+            // Create a KeyStore containing our trusted CAs
+            String keyStoreType = KeyStore.getDefaultType();
+            KeyStore keyStore = KeyStore.getInstance(keyStoreType);
+            keyStore.load(null, null);
+            keyStore.setCertificateEntry("ca", ca);
+
+            // Create a TrustManager that trusts the CAs in our KeyStore
+            String tmfAlgorithm = TrustManagerFactory.getDefaultAlgorithm();
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(tmfAlgorithm);
+            tmf.init(keyStore);
+
+            // Create an SSLContext that uses our TrustManager
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, tmf.getTrustManagers(), null);
+
+            // Get an SSLSocketFactory from the SSLContext
+            SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
+
+            OkHttpClient client = new OkHttpClient.Builder()
+                    .sslSocketFactory(sslSocketFactory, (X509TrustManager)tmf.getTrustManagers()[0])
+                    .hostnameVerifier(new HostnameVerifier() {
+                        @Override
+                        public boolean verify(String hostname, SSLSession session) {
+                            return hostname.equals(hostname); // Or a more sophisticated check
+                        }
+                    })
+                    .build();
+
+            Request request = new Request.Builder().url(url).build();
+
+            client.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    promise.reject("Request Failed", e.getMessage());
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) throws IOException {
+                    if (response.isSuccessful()) {
+                        promise.resolve(response.body().string());
+                    } else {
+                        promise.reject("Request Failed", "Response code: " + response.code());
+                    }
+                }
+            });
+
+
+        } catch (Exception e) {
+            promise.reject("Error during request", e.getMessage());
+        }
+    }
+}
+```
+
+**Step 2: Register the Module**
+
+Register the module in your `MainApplication.java`:
+
+```java
+// MainApplication.java
+
+import com.your_app_name.MyCertificatePinnerModule; // Import your module
+
+import java.util.Arrays;
+import java.util.List;
+
+import com.facebook.react.ReactApplication;
+import com.facebook.react.ReactNativeHost;
+import com.facebook.react.ReactPackage;
+import com.facebook.react.shell.MainReactPackage;
+
+public class MainApplication extends Application implements ReactApplication {
+
+  @Override
+  public List<ReactPackage> getPackages() {
+    return Arrays.<ReactPackage>asList(
+        new MainReactPackage(),
+        new MyCertificatePinnerPackage() // Add your package here
+    );
+  }
+
+  // ... other methods
+}
+```
+
+Create `MyCertificatePinnerPackage.java`:
+
+```java
+// MyCertificatePinnerPackage.java
+
+package com.your_app_name;
+
+import com.facebook.react.ReactPackage;
+import com.facebook.react.bridge.NativeModule;
+import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.uimanager.ViewManager;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
+public class MyCertificatePinnerPackage implements ReactPackage {
+
+    @Override
+    public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
+        List<NativeModule> modules = new ArrayList<>();
+        modules.add(new MyCertificatePinnerModule(reactContext));
+        return modules;
+    }
+
+    @Override
+    public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
+        return Collections.emptyList();
+    }
+}
+```
+
+**Step 3: Use the Native Module in React Native**
+
+```javascript
+// App.js or any React Native component
+
+import { NativeModules } from 'react-native';
+
+const { MyCertificatePinner } = NativeModules;
+
+const App = () => {
+  const handleRequest = async () => {
+    try {
+      // Example using pin
+      const response = await MyCertificatePinner.makePinnedRequest(
+        'https://your-domain.com/api/data',
+        'your-domain.com',
+        'sha256/YOUR_SHA256_PIN' // Replace with your actual pin
+      );
+      console.log('Response from pinned request:', response);
+    } catch (error) {
+      console.error('Error making pinned request:', error);
+    }
+  };
+
+  // Example using certificate from assets folder (for example my_cert.cer)
+  const handleRequestWithCert = async () => {
+    try {
+      const response = await MyCertificatePinner.makePinnedRequestWithCertificate(
+        'https://your-domain.com/api/data',
+        'your-domain.com',
+        'my_cert.cer' // Replace with the filename
+      );
+      console.log('Response from pinned request with certificate:', response);
+    } catch (error) {
+      console.error('Error making pinned request with certificate:', error);
+    }
+  };
+
+  return (
+    <View>
+      <Button title="Make Pinned Request" onPress={handleRequest} />
+      <Button title="Make Pinned Request With Cert" onPress={handleRequestWithCert} />
+    </View>
+  );
+};
+```
+
+**Important:**
+
+* Replace `YOUR_SHA256_PIN` with the actual SHA-256 pin of your server's certificate.  You can obtain this using tools like `openssl`.  See the "Getting Certificate Pins" section below.
+* Put the certificate in `android/app/src/main/assets/` folder for the example using certificate.
+
+### iOS (using URLSession)
+
+For iOS, you can implement certificate pinning using `URLSession` and its delegate methods.
+
+**Step 1: Create an iOS Native Module**
+
+Create an iOS native module using Swift or Objective-C. Here's a Swift example:
+
+```swift
+// MyCertificatePinner.swift
+
+import Foundation
+
+@objc(MyCertificatePinner)
+class MyCertificatePinner: NSObject {
+
+    @objc
+    static func requiresMainQueueSetup() -> Bool {
+        return false
+    }
+
+    @objc
+    func makePinnedRequest(url: String, hostname: String, pin: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        guard let urlObj = URL(string: url) else {
+            reject("Invalid URL", "The provided URL is invalid.", nil)
+            return
+        }
+
+        let session = URLSession(configuration: .default, delegate: CertificatePinningDelegate(hostname: hostname, pin: pin), delegateQueue: nil)
+
+        let task = session.dataTask(with: urlObj) { (data, response, error) in
+            if let error = error {
+                reject("Request Failed", error.localizedDescription, error)
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                reject("Request Failed", "Invalid HTTP Status Code", nil)
+                return
+            }
+
+            guard let data = data, let responseString = String(data: data, encoding: .utf8) else {
+                reject("Request Failed", "Could not decode response data", nil)
+                return
+            }
+
+            resolve(responseString)
+        }
+
+        task.resume()
+    }
+
+    @objc
+    func makePinnedRequestWithCertificate(url: String, hostname: String, certificateName: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+        guard let urlObj = URL(string: url) else {
+            reject("Invalid URL", "The provided URL is invalid.", nil)
+            return
+        }
+
+        guard let certificatePath = Bundle.main.path(forResource: certificateName.replacingOccurrences(of: ".cer", with: ""), ofType: "cer") else {
+            reject("Certificate Not Found", "Certificate file '\(certificateName)' not found in bundle.", nil)
+            return
+        }
+
+        guard let certificateData = try? Data(contentsOf: URL(fileURLWithPath: certificatePath)) else {
+            reject("Certificate Load Failed", "Failed to load certificate data.", nil)
+            return
+        }
+
+        let session = URLSession(configuration: .default, delegate: CertificatePinningDelegateWithCertificate(hostname: hostname, certificateData: certificateData), delegateQueue: nil)
+
+        let task = session.dataTask(with: urlObj) { (data, response, error) in
+            if let error = error {
+                reject("Request Failed", error.localizedDescription, error)
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                reject("Request Failed", "Invalid HTTP Status Code", nil)
+                return
+            }
+
+            guard let data = data, let responseString = String(data: data, encoding: .utf8) else {
+                reject("Request Failed", "Could not decode response data", nil)
+                return
+            }
+
+            resolve(responseString)
+        }
+
+        task.resume()
+    }
+}
+
+// CertificatePinningDelegate.swift
+class CertificatePinningDelegate: NSObject, URLSessionDelegate {
+    let hostname: String
+    let pin: String
+
+    init(hostname: String, pin: String) {
+        self.hostname = hostname
+        self.pin = pin
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        var secresult = SecTrustResultType.invalid
+        let status = SecTrustEvaluate(serverTrust, &secresult)
+
+        if status == errSecSuccess {
+            if let serverCertificate = SecTrustGetCertificateAtIndex(serverTrust, 0) {
+                let serverCertificateData = SecCertificateCopyData(serverCertificate) as Data
+                let serverCertificateString = SHA256(data: serverCertificateData).base64EncodedString()
+
+                if serverCertificateString == pin {
+                    completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                    return
+                }
+            }
+        }
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+
+    // SHA256 calculation
+    func SHA256(data: Data) -> Data {
+        var hash = [UInt8](repeating: 0,  count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes {
+            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return Data(hash)
+    }
+}
+
+class CertificatePinningDelegateWithCertificate: NSObject, URLSessionDelegate {
+    let hostname: String
+    let certificateData: Data
+
+    init(hostname: String, certificateData: Data) {
+        self.hostname = hostname
+        self.certificateData = certificateData
+    }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        var secresult = SecTrustResultType.invalid
+        let status = SecTrustEvaluate(serverTrust, &secresult)
+
+        if status == errSecSuccess {
+            if let serverCertificate = SecTrustGetCertificateAtIndex(serverTrust, 0) {
+                let serverCertificateData = SecCertificateCopyData(serverCertificate) as Data
+
+                if serverCertificateData == certificateData {
+                    completionHandler(.useCredential, URLCredential(trust: serverTrust))
+                    return
+                }
+            }
+        }
+        completionHandler(.cancelAuthenticationChallenge, nil)
+    }
+}
+
+extension Data {
+    func base64EncodedString() -> String {
+        return base64EncodedString(options: [])
+    }
+}
+```
+
+**Bridging Header (if needed)**
+
+If you are using Swift in an Objective-C project, create a bridging header file (`YourProjectName-Bridging-Header.h`) and import `CommonCrypto/CommonCrypto.h`:
+
+```objectivec
+// YourProjectName-Bridging-Header.h
+#import <CommonCrypto/CommonCrypto.h>
+```
+
+**Step 2: Register the Module**
+
+Create a header file for the Objective-C compatibility :
+
+```objectivec
+// MyCertificatePinner.h
+
+#import <React/RCTBridgeModule.h>
+
+@interface MyCertificatePinner : NSObject <RCTBridgeModule>
+
+@end
+```
+
+**Step 3: Use the Native Module in React Native**
+
+```javascript
+// App.js or any React Native component
+
+import { NativeModules } from 'react-native';
+
+const { MyCertificatePinner } = NativeModules;
+
+const App = () => {
+  const handleRequest = async () => {
+    try {
+      // Example using pin
+      const response = await MyCertificatePinner.makePinnedRequest(
+        'https://your-domain.com/api/data',
+        'your-domain.com',
+        'YOUR_SHA256_PIN' // Replace with your actual pin
+      );
+      console.log('Response from pinned request:', response);
+    } catch (error) {
+      console.error('Error making pinned request:', error);
+    }
+  };
+
+    // Example using certificate
+  const handleRequestWithCertificate = async () => {
+    try {
+      // Certificate should be added to the main bundle.
+      const response = await MyCertificatePinner.makePinnedRequestWithCertificate(
+          'https://your-domain.com/api/data',
+          'your-domain.com',
+          'your_certificate.cer' // Replace with your certificate name (with extension)
+      );
+      console.log('Response from pinned request with certificate:', response);
+    } catch (error) {
+      console.error('Error making pinned request with certificate:', error);
+    }
+  };
+
+
+  return (
+    <View>
+      <Button title="Make Pinned Request" onPress={handleRequest} />
+      <Button title="Make Pinned Request With Cert" onPress={handleRequestWithCertificate} />
+    </View>
+  );
+};
+```
+
+**Important:**
+
+* Replace `YOUR_SHA256_PIN` with the actual SHA-256 pin of your server's certificate.  You can obtain this using tools like `openssl`.  See the "Getting Certificate Pins" section below.
+*  Add the certificate (.cer) file to your Xcode project, ensuring it is included in the "Copy Bundle Resources" build phase.
+
+## 2. Using `react-native-ssl-pinning`
+
+This library simplifies the certificate pinning process and provides a cross-platform solution.
+
+**Step 1: Install the Library**
+
+```bash
+npm install react-native-ssl-pinning --save
+# or
+yarn add react-native-ssl-pinning
+```
+
+**Step 2: Link Native Libraries**
+
+```bash
+react-native link react-native-ssl-pinning
+```
+
+**Step 3: Usage**
+
+```javascript
+import SslPinning from 'react-native-ssl-pinning';
+
+const App = () => {
+  const handleRequest = async () => {
+    try {
+      const response = await SslPinning.fetch(
+        'https://your-domain.com/api/data',
+        {
+          method: 'GET',
+          sslPinning: {
+            certs: ['your_certificate'], //  Certificates should be added to bundle
+          },
+        }
+      );
+
+      const responseJson = await response.json();
+      console.log('Response from pinned request:', responseJson);
+    } catch (err) {
+      console.log(err);
+      if (err.message.includes('TrustKit')) {
+        // iOS TrustKit errors. Check the documentation for troubleshooting.
+        console.error('TrustKit Error:', err.message);
+      } else if (err.message.includes('certificate pinning')) {
+          // Android certificate pinning errors
+          console.error('Certificate Pinning Error:', err.message);
+      }
+       else {
+        console.error('Error making pinned request:', err);
+      }
+    }
+  };
+
+  return (
+    <View>
+      <Button title="Make Pinned Request" onPress={handleRequest} />
+    </View>
+  );
+};
+```
+
+**Important:**
+
+* Place your server's certificate (`your_certificate.cer` or `.pem`) in the appropriate folders for each platform:
+    * **iOS:** Add the certificate to your Xcode project and ensure it's included in the "Copy Bundle Resources" build phase.
+    * **Android:** Place the certificate file in the `android/app/src/main/res/raw` directory. If the `raw` directory doesn't exist, create it.
+
+## 3. Using `trustkit-react-native` (iOS Only)
+
+`trustkit-react-native` leverages the TrustKit framework, providing a robust and recommended approach for certificate pinning on iOS.  TrustKit offers excellent logging and reporting capabilities, making it easier to debug and monitor pinning failures.
+
+**Step 1: Install the Library**
+
+```bash
+npm install trustkit-react-native --save
+# or
+yarn add trustkit-react-native
+```
+
+**Step 2: Link Native Libraries**
+
+```bash
+react-native link trustkit-react-native
+```
+
+**Step 3: Configure TrustKit**
+
+You need to configure TrustKit in your `Info.plist` file.  Add the `TSKConfiguration` key as a dictionary. Within `TSKConfiguration`, specify the domains you want to pin and their pinning policies.
+
+```xml
+<!-- Info.plist -->
+<key>TSKConfiguration</key>
+<dict>
+    <key>TSKSwizzleNetworkDelegates</key>
+    <true/>
+    <key>TSKPinnedDomains</key>
+    <dict>
+        <key>your-domain.com</key>
+        <dict>
+            <key>TSKServerPinningMode</key>
+            <string>TSKPinningModePublicKey</string>
+            <key>TSKPublicKeyHashes</key>
+            <array>
+                <string>YOUR_SHA256_PIN_1</string>
+                <string>YOUR_SHA256_PIN_2</string> <!-- Backup pin -->
+            </array>
+            <key>TSKReportUris</key>
+            <array>
+                <string>https://your-reporting-endpoint.com/report</string> <!-- Optional: Report pinning failures -->
+            </array>
+            <key>TSKEnforcePinning</key>
+            <true/> <!--  Whether to enforce pinning or just report failures. -->
+        </dict>
+    </dict>
+</dict>
+```
+
+**Explanation of `Info.plist` configuration:**
+
+*   **`TSKSwizzleNetworkDelegates`**:  Enables TrustKit to automatically intercept network connections. Set to `true`.
+*   **`TSKPinnedDomains`**:  A dictionary where keys are domain names and values are pinning policies.
+*   **`TSKServerPinningMode`**:  Specifies the pinning mode.  `TSKPinningModePublicKey` is recommended and pins the server's public key.  `TSKPinningModeCertificate` pins the entire certificate.  Using `TSKPinningModePublicKey` is generally preferred as it is more resilient to certificate rotations.
+*   **`TSKPublicKeyHashes`**:  An array of SHA-256 hashes of your server's public keys.  **Crucially, provide at least one *backup* pin.**  This is essential to prevent your app from breaking if you need to rotate your certificate.
+*   **`TSKReportUris`**:  (Optional) An array of URLs where TrustKit can send reports about pinning failures. This is highly recommended for monitoring and debugging.
+*   **`TSKEnforcePinning`**: (Optional, defaults to false)  Set to true to enforce pinning. If false, it will only report failures and continue.
+
+**Step 4: Usage (Making Network Requests)**
+
+You can now make network requests using standard `fetch` or `XMLHttpRequest` APIs.  TrustKit will automatically handle the certificate pinning based on your `Info.plist` configuration.
+
+```javascript
+// App.js or any React Native component
+
+const App = () => {
+  const handleRequest = async () => {
+    try {
+      const response = await fetch('https://your-domain.com/api/data');
+      const responseJson = await response.json();
+      console.log('Response from pinned request:', responseJson);
+    } catch (error) {
+      console.error('Error making pinned request:', error);
+    }
+  };
+
+  return (
+    <View>
+      <Button title="Make Pinned Request" onPress={handleRequest} />
+    </View>
+  );
+};
+```
+
+**Important Considerations for TrustKit:**
+
+*   **Backup Pins:**  Always include at least one backup pin in your `TSKPublicKeyHashes` array.  This is critical for seamless certificate rotation.
+*   **Reporting:**  Implement a reporting endpoint (`TSKReportUris`) to monitor pinning failures in production.  This will help you identify issues related to certificate rotation, MITM attacks, or misconfigurations.
+*   **Enforcement:** Carefully consider whether to set `TSKEnforcePinning` to `true` in production.  If you enable enforcement without proper planning, a pinning failure can completely break your app's network communication.
+
+## Getting Certificate Pins (SHA-256 Hashes)
+
+Regardless of the method you choose, you'll need the SHA-256 hash of your server's certificate or public key.  Here's how to obtain it using `openssl`:
+
+**1. Get the Certificate:**
+
+You can download the certificate from your server using `openssl`:
+
+```bash
+openssl s_client -servername your-domain.com -connect your-domain.com:443 2>/dev/null | openssl x509 -outform PEM > your-domain.pem
+```
+
+**2. Calculate the SHA-256 Pin:**
+
+Use `openssl` to calculate the SHA-256 hash of the certificate:
+
+```bash
+openssl x509 -in your-domain.pem -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | openssl enc -base64
+```
+
+This command will output the base64-encoded SHA-256 hash of the public key.  This is the value you need to use as your certificate pin (e.g., in `MyCertificatePinnerModule.java`, `MyCertificatePinner.swift`, `react-native-ssl-pinning`, or the `Info.plist` for TrustKit).
+
+**Example Output:**
+
+```
+sha256/YOUR_SHA256_PIN
+```
+
+## Best Practices for Certificate Pinning
+
+*   **Pin to the Public Key, Not the Certificate:** Pinning to the public key is more resilient to certificate rotations, as long as the underlying public key remains the same.
+*   **Include Backup Pins:** Always include at least one backup pin in case you need to rotate your certificate. This prevents your app from breaking if the primary certificate expires or is compromised.  Rotate certificates frequently.
+*   **Implement a Reporting Mechanism:**  Set up a system to report pinning failures to a server. This allows you to monitor for potential MITM attacks and identify issues with your pinning configuration.  TrustKit's reporting capabilities are excellent for this.
+*   **Consider a Grace Period:**  Before enforcing pinning strictly, consider a grace period where you only log pinning failures and allow connections to continue. This gives you time to identify and address any issues with your configuration before users are affected.
+*   **Monitor and Rotate Pins:** Regularly monitor your pinning configuration and rotate your pins when you rotate your certificates.
+*   **Choose the Right Approach:**  Evaluate the trade-offs between the different approaches (native modules, `react-native-ssl-pinning`, `trustkit-react-native`) and choose the one that best suits your project's needs and resources. TrustKit is highly recommended for iOS if you can leverage it.
+*   **Test Thoroughly:**  Thoroughly test your certificate pinning implementation on different devices and network conditions.
+*   **Handle Pinning Failures Gracefully:**  Implement proper error handling to gracefully handle pinning failures.  Inform the user about the issue and provide instructions on how to resolve it (e.g., update the app). Don't just let the app crash.
+* **Document Everything:**  Document your certificate pinning implementation clearly, including the reasons for your choices and any platform-specific configurations.
+
+## Conclusion
+
+Certificate pinning is a crucial security measure for protecting your React Native applications from MITM attacks.  By implementing certificate pinning, you can significantly enhance the trustworthiness of your app's network communication and ensure the privacy and security of your users' data.  This guide provides a comprehensive overview of different approaches and best practices for implementing certificate pinning in React Native. Choose the approach that best fits your needs and remember to test thoroughly and monitor your implementation to ensure its effectiveness.  Remember to always prioritize security best practices in your mobile development lifecycle.
