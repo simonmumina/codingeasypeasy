@@ -6,6 +6,10 @@ const POSTS_PER_PAGE = 25
 
 export const metadata = genPageMetadata({ title: 'Tags', description: 'CodingEasyPeasy Tags' })
 
+export const revalidate = 60; 
+
+export const dynamicParams = true
+
 export default async function Page(props: { searchParams: Promise<{ page: string }> }) {
   const tagCounts = tagData as Record<string, number>
   const tagKeys = Object.keys(tagCounts)

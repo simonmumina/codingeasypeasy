@@ -1,7 +1,9 @@
-import Link from '@/components/Link'
-import Tag from '@/components/Tag'
+import Link from './Link'
+import Tag from './Tag'
 import siteMetadata from '@/data/siteMetadata'
 import { formatDate } from 'pliny/utils/formatDate'
+
+const MAX_DISPLAY = 5
 
 export default function Home({ posts }) {
   return (
@@ -17,7 +19,7 @@ export default function Home({ posts }) {
         </div>
         <ul className="divide-y divide-gray-200 dark:divide-gray-700">
           {!posts.length && 'No posts found.'}
-          {posts.map((post) => {
+          {posts.slice(0, MAX_DISPLAY).map((post) => {
             const { slug, date, title, summary, tags } = post
             return (
               <li key={slug} className="py-12">
@@ -67,7 +69,7 @@ export default function Home({ posts }) {
           })}
         </ul>
       </div>
-      
+      {posts.length > MAX_DISPLAY && (
         <div className="flex justify-end text-base leading-6 font-medium">
           <Link
             href="/blog"
@@ -77,6 +79,7 @@ export default function Home({ posts }) {
             All Posts &rarr;
           </Link>
         </div>
+      )}
     </>
   )
 }

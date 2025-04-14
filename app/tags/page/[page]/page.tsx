@@ -4,12 +4,16 @@ import { notFound } from 'next/navigation'
 
 const POSTS_PER_PAGE = 25
 
-export const generateStaticParams = async () => {
-  const totalPages = Math.ceil(tagData.length / POSTS_PER_PAGE)
-  const paths = Array.from({ length: totalPages }, (_, i) => ({ page: (i + 1).toString() }))
+export const revalidate = 60;
 
-  return paths
-}
+export const dynamicParams = true
+
+// export const generateStaticParams = async () => {
+//   const totalPages = Math.ceil(tagData.length / POSTS_PER_PAGE)
+//   const paths = Array.from({ length: totalPages }, (_, i) => ({ page: (i + 1).toString() }))
+
+//   return paths
+// }
 
 export default async function Page(props: { params: Promise<{ page: string }> }) {
   const params = await props.params

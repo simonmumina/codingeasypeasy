@@ -1,11 +1,14 @@
 import { sortPosts, allCoreContent } from 'pliny/utils/contentlayer'
-import { allBlogs } from 'contentlayer/generated'
-import Main from './Main'
+import allBlogs from '@/latestBlogs/index'
+import Main from '@/components/Main'
 
-const MAX_DISPLAY = 5
+export const revalidate = 60
+
+export const dynamicParams = true
 
 export default async function Page() {
-  const sortedPosts = sortPosts(allBlogs.slice(0, MAX_DISPLAY))
-  const posts = allCoreContent(sortedPosts)
+  const blogs: any = allBlogs;
+  const sortedPosts = sortPosts(blogs);
+  const posts = allCoreContent(sortedPosts);
   return <Main posts={posts} />
 }
