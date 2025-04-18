@@ -72,7 +72,7 @@ module.exports = () => {
       webpackMemoryOptimizations: true,
     },
     eslint: {
-      dirs: ['app', 'components', 'layouts', 'scripts'],
+      dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
     },
     images: {
       remotePatterns: [
