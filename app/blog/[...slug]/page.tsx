@@ -72,9 +72,9 @@ export const revalidate = 60
 
 export const dynamicParams = true
 
-// export const generateStaticParams = async () => {
-//   return allBlogs?.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
-// }
+export const generateStaticParams = async () => {
+  return allBlogs?.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
+}
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
   const params = await props.params

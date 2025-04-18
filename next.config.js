@@ -1,4 +1,4 @@
-// const { withContentlayer } = require('next-contentlayer2')
+const { withContentlayer } = require('next-contentlayer2')
 
 const withBundleAnalyzer = require('@next/bundle-analyzer')({
   enabled: process.env.ANALYZE === 'true',
@@ -62,7 +62,7 @@ const unoptimized = process.env.UNOPTIMIZED ? true : undefined
  * @type {import('next/dist/next-server/server/config').NextConfig}
  **/
 module.exports = () => {
-  const plugins = [withBundleAnalyzer]
+  const plugins = [withContentlayer, withBundleAnalyzer]
   return plugins.reduce((acc, next) => next(acc), {
     output,
     basePath,
@@ -99,7 +99,7 @@ module.exports = () => {
 
       config.optimization.splitChunks = {
         chunks: 'all',
-        maxSize: 244 * 1024, // 244KB - try to keep chunks smaller
+        maxSize: 244 * 1024, 
       }
 
       return config
