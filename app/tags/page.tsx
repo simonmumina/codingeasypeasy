@@ -1,27 +1,17 @@
+import Link from '@/components/Link'
+import Tag from '@/components/Tag'
+import { slug } from 'github-slugger'
 import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
-import TagsLayout from '@/layouts/TagsLayout'
 
-const POSTS_PER_PAGE = 25
+export const dynamic = 'force-dynamic'
 
 export const metadata = genPageMetadata({ title: 'Tags', description: 'CodingEasyPeasy Tags' })
 
-export const revalidate = 60; 
-
-export const dynamicParams = true
-
-export default async function Page(props: { searchParams: Promise<{ page: string }> }) {
+export default async function Page() {
   const tagCounts = tagData as Record<string, number>
   const tagKeys = Object.keys(tagCounts)
   const sortedTags = tagKeys.sort((a, b) => tagCounts[b] - tagCounts[a])
-  const pageNumber = 1
-  const totalPages = Math.ceil(sortedTags.length / POSTS_PER_PAGE)
-  const initialDisplayPosts = sortedTags.slice(0, POSTS_PER_PAGE * pageNumber)
-  const pagination = {
-    currentPage: pageNumber,
-    totalPages: totalPages,
-  }
-
   return (
     <>
       <div className="flex flex-col items-start justify-start divide-y divide-gray-200 md:mt-24 md:flex-row md:items-center md:justify-center md:space-x-6 md:divide-y-0 dark:divide-gray-700">
@@ -32,12 +22,20 @@ export default async function Page(props: { searchParams: Promise<{ page: string
         </div>
         <div className="flex max-w-lg flex-wrap">
           {tagKeys.length === 0 && 'No tags found.'}
-          <TagsLayout
-            tags={sortedTags}
-            initialDisplayPosts={initialDisplayPosts}
-            pagination={pagination}
-            tagCounts={tagCounts}
-          />
+          {sortedTags.map((t) => {
+            return (
+              <div key={t} className="mt-2 mr-5 mb-2">
+                <Tag text={t} />
+                <Link
+                  href={`/tags/${slug(t)}`}
+                  className="-ml-2 text-sm font-semibold text-gray-600 uppercase dark:text-gray-300"
+                  aria-label={`View posts tagged ${t}`}
+                >
+                  {` (${tagCounts[t]})`}
+                </Link>
+              </div>
+            )
+          })}
         </div>
       </div>
     </>

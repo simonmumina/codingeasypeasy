@@ -6,8 +6,6 @@ import { genPageMetadata } from 'app/seo'
 
 export const metadata = genPageMetadata({ title: 'About' })
 
-export const revalidate = 60;
-
 export default async function Page() {
   const author = allAuthors?.find((p) => p.slug === 'default') as Authors
   const mainContent = coreContent(author)

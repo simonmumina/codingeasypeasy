@@ -1,6 +1,7 @@
 import 'css/prism.css'
 import 'katex/dist/katex.css'
 
+import PageTitle from '@/components/PageTitle'
 import { components } from '@/components/MDXComponents'
 import { MDXLayoutRenderer } from 'pliny/mdx-components'
 import { sortPosts, coreContent, allCoreContent } from 'pliny/utils/contentlayer'
@@ -10,6 +11,8 @@ import PostLayout from '@/layouts/PostLayout'
 import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
 import { notFound } from 'next/navigation'
+
+export const dynamic = 'force-dynamic'
 
 const defaultLayout = 'PostLayout'
 const layouts = {
@@ -21,7 +24,7 @@ export async function generateMetadata(props: {
 }): Promise<Metadata | undefined> {
   const params = await props.params
   const slug = decodeURI(params.slug.join('/'))
-  const post = allBlogs?.find((p) => p.slug === slug)
+  const post = allBlogs.find((p) => p.slug === slug)
   const authorList = post?.authors || ['default']
   const authorDetails = authorList.map((author) => {
     const authorResults = allAuthors.find((p) => p.slug === author)
@@ -40,7 +43,7 @@ export async function generateMetadata(props: {
   }
   const ogImages = imageList.map((img) => {
     return {
-      url: img.includes('http') ? img : siteMetadata.siteUrl + img,
+      url: img && img.includes('http') ? img : siteMetadata.siteUrl + img,
     }
   })
 
@@ -68,12 +71,8 @@ export async function generateMetadata(props: {
   }
 }
 
-export const revalidate = 60
-
-export const dynamicParams = true
-
 export const generateStaticParams = async () => {
-  return allBlogs?.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
+  return allBlogs.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
 }
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
@@ -88,7 +87,7 @@ export default async function Page(props: { params: Promise<{ slug: string[] }> 
 
   const prev = sortedCoreContents[postIndex + 1]
   const next = sortedCoreContents[postIndex - 1]
-  const post = allBlogs?.find((p) => p.slug === slug) as Blog
+  const post = allBlogs.find((p) => p.slug === slug) as Blog
   const authorList = post?.authors || ['default']
   const authorDetails = authorList.map((author) => {
     const authorResults = allAuthors.find((p) => p.slug === author)

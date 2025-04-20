@@ -3,13 +3,11 @@ import { allBlogs } from 'contentlayer/generated'
 import { genPageMetadata } from 'app/seo'
 import ListLayout from '@/layouts/ListLayoutWithTags'
 
+export const dynamic = 'force-dynamic'
+
 const POSTS_PER_PAGE = 5
 
 export const metadata = genPageMetadata({ title: 'Blog' })
-
-export const revalidate = 60;
-
-export const dynamicParams = true
 
 export default async function BlogPage(props: { searchParams: Promise<{ page: string }> }) {
   const posts = allCoreContent(sortPosts(allBlogs))

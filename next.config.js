@@ -99,7 +99,7 @@ module.exports = () => {
 
       config.optimization.splitChunks = {
         chunks: 'all',
-        maxSize: 244 * 1024, 
+        maxSize: 244 * 1024,
       }
 
       return config
