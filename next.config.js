@@ -70,7 +70,18 @@ module.exports = () => {
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
     experimental: {
       webpackMemoryOptimizations: true,
+      optimizePackageImports: ['contentlayer2'],
     },
+    distDir: '.next',
+    // outputFileTracingIncludes: {
+    //   '/blog/[...slug]': ['./app/blog/[...slug]/page.tsx'],
+    //   '/blog/page/[page]': ['./app/blog/page/[page]/page.tsx'],
+    //   '/about': ['./app/about/page.tsx'],
+    //   '/tags/[tag]': ['./app/tags/[tag]/page.tsx'],
+    //   '/tags/[tag]/page/[page]': ['./app/tags/[tag]/page/[page]/page.tsx'],
+    //   '/tags/page/[page]': ['./app/tags/page/[page]/page.tsx'],
+    //   '/tags': ['./app/tags/page.tsx'],
+    // },
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
     },
@@ -91,16 +102,16 @@ module.exports = () => {
         },
       ]
     },
-    webpack: (config, options) => {
+    webpack: (config, { isServer }) => {
       config.module.rules.push({
         test: /\.svg$/,
         use: ['@svgr/webpack'],
       })
 
-      config.optimization.splitChunks = {
-        chunks: 'all',
-        maxSize: 244 * 1024,
-      }
+        config.optimization.splitChunks = {
+          chunks: 'all',
+          maxSize: 244 * 1024,
+        }
 
       return config
     },

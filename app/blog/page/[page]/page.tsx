@@ -3,7 +3,7 @@ import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 import { allBlogs } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 
-export const dynamic = 'force-dynamic'
+export const revalidate = 3600
 
 const POSTS_PER_PAGE = 5
 
