@@ -86,11 +86,15 @@ function createSearchIndex(allBlogs) {
     siteMetadata?.search?.provider === 'kbar' &&
     siteMetadata.search.kbarConfig.searchDocumentsPath
   ) {
-    writeFileSync(
-      `public/${path.basename(siteMetadata.search.kbarConfig.searchDocumentsPath)}`,
-      JSON.stringify(allCoreContent(sortPosts(allBlogs)))
-    )
-    console.log('Local search index generated...')
+    if (allBlogs.length > 0) {
+      writeFileSync(
+        `public/${path.basename(siteMetadata.search.kbarConfig.searchDocumentsPath)}`,
+        JSON.stringify(allCoreContent(sortPosts(allBlogs)))
+      )
+      console.log('Local search index generated...')
+    } else {
+      console.warn('⚠️ No documents to index. Skipping search index generation.')
+    }
   }
 }
 
