@@ -70,7 +70,7 @@ module.exports = () => {
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
     experimental: {
       webpackMemoryOptimizations: true,
-      // optimizePackageImports: ['contentlayer2'],
+      optimizePackageImports: ['contentlayer2'],
     },
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
@@ -101,12 +101,6 @@ module.exports = () => {
       config.optimization.splitChunks = {
         chunks: 'all',
         maxSize: 244 * 1024,
-      }
-
-      if (dev && !isServer) {
-        config.infrastructureLogging = {
-          level: 'verbose', // options: 'none', 'error', 'warn', 'info', 'log', 'verbose'
-        }
       }
 
       return config
