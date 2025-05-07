@@ -64,17 +64,28 @@ const unoptimized = process.env.UNOPTIMIZED ? true : undefined
 module.exports = () => {
   const plugins = [withContentlayer, withBundleAnalyzer]
   return plugins.reduce((acc, next) => next(acc), {
-    productionBrowserSourceMaps: false,
-    experimental: {
-      serverSourceMaps: false,
-      webpackMemoryOptimizations: true,
-    },
     output,
     basePath,
     reactStrictMode: true,
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
+    experimental: {
+      webpackMemoryOptimizations: true,
+    },
+    serverExternalPackages: ['contentlayer2'],
+    outputFileTracingExcludes: {
+      // Apply to all serverless functions (wildcard)
+      '*': [
+        './.next/cache/**/*',
+        './node_modules/.cache/**/*',
+        './.contentlayer/generated/**/*',
+        './node_modules/@contentlayer/**/*',
+        './data/**/*.mdx',
+        '**/*.contentlayer/generated/**',
+        '**/.contentlayer/generated/**',
+      ],
+    },
     eslint: {
-      dirs: ['app', 'components', 'layouts', 'scripts'],
+      dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
     },
     images: {
       remotePatterns: [
@@ -93,11 +104,20 @@ module.exports = () => {
         },
       ]
     },
-    webpack: (config, { buildId, dev, isServer, defaultLoaders, nextRuntime, webpack }) => {
+    webpack: (config, { dev, isServer }) => {
       config.module.rules.push({
         test: /\.svg$/,
         use: ['@svgr/webpack'],
       })
+
+      if (!dev && isServer) {
+        // Force smaller chunks for serverless
+        config.optimization.splitChunks = {
+          chunks: 'all',
+          maxSize: 200 * 1024, // Reduced from 244KB to 200KB
+          minSize: 20 * 1024,
+        }
+      }
 
       return config
     },

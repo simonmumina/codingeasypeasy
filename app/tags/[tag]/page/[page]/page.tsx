@@ -1,31 +1,27 @@
 import { slug } from 'github-slugger'
-import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
+// import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 import ListLayout from '@/layouts/ListLayoutWithTags'
-import { allBlogs } from 'contentlayer/generated'
+// import { allBlogs } from 'contentlayer/generated'
 import tagData from 'app/tag-data.json'
 import { notFound } from 'next/navigation'
 
-export const revalidate = 60
+const POSTS_PER_PAGE = 5
 
-export const dynamicParams = true
-
-export const maxDuration = 800
-
-const POSTS_PER_PAGE = 50
-
-// export const generateStaticParams = async () => {
-//   const tagCounts = tagData as Record<string, number>
-//   return Object.keys(tagCounts).flatMap((tag) => {
-//     const postCount = tagCounts[tag]
-//     const totalPages = Math.max(1, Math.ceil(postCount / POSTS_PER_PAGE))
-//     return Array.from({ length: totalPages }, (_, i) => ({
-//       tag: encodeURI(tag),
-//       page: (i + 1).toString(),
-//     }))
-//   })
-// }
+export const generateStaticParams = async () => {
+  const tagCounts = tagData as Record<string, number>
+  return Object.keys(tagCounts).flatMap((tag) => {
+    const postCount = tagCounts[tag]
+    const totalPages = Math.max(1, Math.ceil(postCount / POSTS_PER_PAGE))
+    return Array.from({ length: totalPages }, (_, i) => ({
+      tag: encodeURI(tag),
+      page: (i + 1).toString(),
+    }))
+  })
+}
 
 export default async function TagPage(props: { params: Promise<{ tag: string; page: string }> }) {
+  const { allBlogs } = await import('contentlayer/generated')
+  const { allCoreContent, sortPosts } = await import('pliny/utils/contentlayer')
   const params = await props.params
   const tag = decodeURI(params.tag)
   const title = tag[0]?.toUpperCase() + tag.split(' ').join('-').slice(1)
