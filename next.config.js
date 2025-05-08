@@ -71,7 +71,7 @@ module.exports = () => {
     experimental: {
       webpackMemoryOptimizations: true,
     },
-    serverExternalPackages: ['contentlayer2'],
+    serverExternalPackages: ['contentlayer2', 'contentlayer/generated'],
     outputFileTracingExcludes: {
       // Apply to all serverless functions (wildcard)
       '*': [
@@ -109,15 +109,6 @@ module.exports = () => {
         test: /\.svg$/,
         use: ['@svgr/webpack'],
       })
-
-      if (!dev && isServer) {
-        // Force smaller chunks for serverless
-        config.optimization.splitChunks = {
-          chunks: 'all',
-          maxSize: 200 * 1024, // Reduced from 244KB to 200KB
-          minSize: 20 * 1024,
-        }
-      }
 
       return config
     },

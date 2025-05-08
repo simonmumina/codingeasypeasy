@@ -1,5 +1,5 @@
 import { slug } from 'github-slugger'
-// import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
+import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 import siteMetadata from '@/data/siteMetadata'
 import ListLayout from '@/layouts/ListLayoutWithTags'
 // import { allBlogs } from 'contentlayer/generated'
@@ -7,9 +7,7 @@ import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 import { Metadata } from 'next'
 
-export const revalidate = 3600
-
-export const dynamicParams = false
+export const dynamic = 'force-static'
 
 const POSTS_PER_PAGE = 5
 
@@ -40,7 +38,6 @@ export const generateStaticParams = async () => {
 
 export default async function TagPage(props: { params: Promise<{ tag: string }> }) {
   const { allBlogs } = await import('contentlayer/generated')
-  const { allCoreContent, sortPosts } = await import('pliny/utils/contentlayer')
   const params = await props.params
   const tag = decodeURI(params.tag)
   const title = tag[0].toUpperCase() + tag.split(' ').join('-').slice(1)

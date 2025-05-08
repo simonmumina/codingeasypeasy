@@ -1,7 +1,9 @@
-// import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
+import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 // import { allBlogs } from 'contentlayer/generated'
 import { genPageMetadata } from 'app/seo'
 import ListLayout from '@/layouts/ListLayoutWithTags'
+
+export const dynamic = 'force-static'
 
 const POSTS_PER_PAGE = 5
 
@@ -9,7 +11,6 @@ export const metadata = genPageMetadata({ title: 'Blog' })
 
 export default async function BlogPage(props: { searchParams: Promise<{ page: string }> }) {
   const { allBlogs } = await import('contentlayer/generated')
-  const { allCoreContent, sortPosts } = await import('pliny/utils/contentlayer')
   const posts = allCoreContent(sortPosts(allBlogs))
   const pageNumber = 1
   const totalPages = Math.ceil(posts.length / POSTS_PER_PAGE)

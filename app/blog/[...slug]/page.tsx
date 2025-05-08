@@ -3,13 +3,15 @@ import 'katex/dist/katex.css'
 
 import { components } from '@/components/MDXComponents'
 import { MDXLayoutRenderer } from 'pliny/mdx-components'
-// import { sortPosts, coreContent, allCoreContent } from 'pliny/utils/contentlayer'
+import { sortPosts, coreContent, allCoreContent } from 'pliny/utils/contentlayer'
 // import { allBlogs, allAuthors } from 'contentlayer/generated'
 import type { Authors, Blog } from 'contentlayer/generated'
 import PostLayout from '@/layouts/PostLayout'
 import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
 import { notFound } from 'next/navigation'
+
+export const dynamic = 'force-static'
 
 const defaultLayout = 'PostLayout'
 const layouts = {
@@ -76,7 +78,6 @@ export const generateStaticParams = async () => {
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
   const { allBlogs, allAuthors } = await import('contentlayer/generated')
-  const { sortPosts, coreContent, allCoreContent } = await import('pliny/utils/contentlayer')
   const params = await props.params
   const slug = decodeURI(params.slug.join('/'))
   // Filter out drafts in production

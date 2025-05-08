@@ -4,6 +4,8 @@ import { slug } from 'github-slugger'
 import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 
+export const dynamic = 'force-static'
+
 export const metadata = genPageMetadata({ title: 'Tags', description: 'CodingEasyPeasy Tags' })
 
 export default async function Page() {
