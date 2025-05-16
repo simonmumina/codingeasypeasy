@@ -3,12 +3,22 @@ import { allCoreContent, sortPosts } from 'pliny/utils/contentlayer'
 // import { allBlogs } from 'contentlayer/generated'
 import { notFound } from 'next/navigation'
 
-export const dynamic = 'force-static'
+export const revalidate = 3600
 
 const POSTS_PER_PAGE = 5
 
 export const generateStaticParams = async () => {
-  const { allBlogs } = await import('contentlayer/generated')
+  const { allBlogs } = await import('../../../../.contentlayer/generated/Blog/_index.mjs')
+  // const response = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allBlogs = await response.json()
+
   const totalPages = Math.ceil(allBlogs.length / POSTS_PER_PAGE)
   const paths = Array.from({ length: totalPages }, (_, i) => ({ page: (i + 1).toString() }))
 
@@ -16,9 +26,19 @@ export const generateStaticParams = async () => {
 }
 
 export default async function Page(props: { params: Promise<{ page: string }> }) {
-  const { allBlogs } = await import('contentlayer/generated')
+  const { allBlogs } = await import('../../../../.contentlayer/generated/Blog/_index.mjs')
+  // const response = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allBlogs: any = await response.json()
+  
   const params = await props.params
-  const posts = allCoreContent(sortPosts(allBlogs))
+  const posts: any = allCoreContent(sortPosts(allBlogs))
   const pageNumber = parseInt(params.page as string)
   const totalPages = Math.ceil(posts.length / POSTS_PER_PAGE)
 

@@ -3,7 +3,7 @@ import { sortPosts, allCoreContent } from 'pliny/utils/contentlayer'
 import allBlogs from '../latestBlogs/index'
 import Main from './Main'
 
-export const dynamic = 'force-static'
+export const revalidate = 3600
 
 export default async function Page() {
   const blogs: any = allBlogs

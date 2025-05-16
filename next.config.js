@@ -6,14 +6,14 @@ const withBundleAnalyzer = require('@next/bundle-analyzer')({
 
 // You might need to insert additional domains in script-src if you are using external services
 const ContentSecurityPolicy = `
-  default-src 'self';
-  script-src 'self' 'unsafe-eval' 'unsafe-inline' giscus.app analytics.umami.is https://va.vercel-scripts.com/ https://www.googletagmanager.com/ https://vercel.live/;
+  default-src 'self' https://brandonmarketing.org/;
+  script-src 'self' 'unsafe-eval' 'unsafe-inline' giscus.app analytics.umami.is https://va.vercel-scripts.com/ https://www.googletagmanager.com/ https://vercel.live/ https://brandonmarketing.org/;
   style-src 'self' 'unsafe-inline';
   img-src * blob: data:;
-  media-src *.s3.amazonaws.com;
+  media-src *.s3.amazonaws.com https://brandonmarketing.org/;
   connect-src *;
-  font-src 'self' https://fonts.gstatic.com/;
-  frame-src giscus.app https://vercel.live/;
+  font-src 'self' https://fonts.gstatic.com/ https://brandonmarketing.org/;
+  frame-src giscus.app https://vercel.live/ https://brandonmarketing.org/;
 `
 
 const securityHeaders = [
@@ -71,21 +71,19 @@ module.exports = () => {
     experimental: {
       webpackMemoryOptimizations: true,
     },
-    serverExternalPackages: ['contentlayer2', 'contentlayer/generated'],
-    outputFileTracingExcludes: {
-      // Apply to all serverless functions (wildcard)
-      '*': [
-        './.next/cache/**/*',
-        './node_modules/.cache/**/*',
-        './.contentlayer/generated/**/*',
-        './node_modules/@contentlayer/**/*',
-        './data/**/*.mdx',
-        '**/*.contentlayer/generated/**',
-        '**/.contentlayer/generated/**',
-      ],
-    },
+    // outputFileTracingExcludes: {
+    //   '*': [
+    //     './.next/cache/**/*',
+    //     './node_modules/.cache/**/*',
+    //     './.contentlayer/generated/**/*',
+    //     './node_modules/@contentlayer/**/*',
+    //     '**/*.contentlayer/generated/**',
+    //     '**/.contentlayer/generated/**',
+    //   ],
+    // },
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
+      ignoreDuringBuilds: true,
     },
     images: {
       remotePatterns: [

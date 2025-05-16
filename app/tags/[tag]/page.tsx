@@ -7,7 +7,7 @@ import tagData from 'app/tag-data.json'
 import { genPageMetadata } from 'app/seo'
 import { Metadata } from 'next'
 
-export const dynamic = 'force-static'
+export const revalidate = 3600
 
 const POSTS_PER_PAGE = 5
 
@@ -37,11 +37,16 @@ export const generateStaticParams = async () => {
 }
 
 export default async function TagPage(props: { params: Promise<{ tag: string }> }) {
-  const { allBlogs } = await import('contentlayer/generated')
+  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
+  // const response = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.json`
+  // )
+  // const allBlogs: any = await response.json()
+
   const params = await props.params
   const tag = decodeURI(params.tag)
   const title = tag[0].toUpperCase() + tag.split(' ').join('-').slice(1)
-  const filteredPosts = allCoreContent(
+  const filteredPosts: any = allCoreContent(
     sortPosts(allBlogs.filter((post) => post.tags && post.tags.map((t) => slug(t)).includes(tag)))
   )
   const totalPages = Math.ceil(filteredPosts.length / POSTS_PER_PAGE)

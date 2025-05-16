@@ -5,13 +5,13 @@ import { components } from '@/components/MDXComponents'
 import { MDXLayoutRenderer } from 'pliny/mdx-components'
 import { sortPosts, coreContent, allCoreContent } from 'pliny/utils/contentlayer'
 // import { allBlogs, allAuthors } from 'contentlayer/generated'
-import type { Authors, Blog } from 'contentlayer/generated'
+import type { Authors, Blog } from '../../../.contentlayer/generated/types.d.ts'
 import PostLayout from '@/layouts/PostLayout'
 import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
 import { notFound } from 'next/navigation'
 
-export const dynamic = 'force-static'
+export const revalidate = 3600
 
 const defaultLayout = 'PostLayout'
 const layouts = {
@@ -21,7 +21,28 @@ const layouts = {
 export async function generateMetadata(props: {
   params: Promise<{ slug: string[] }>
 }): Promise<Metadata | undefined> {
-  const { allBlogs, allAuthors } = await import('contentlayer/generated')
+  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
+  const { allAuthors } = await import('../../../.contentlayer/generated/Authors/_index.mjs')
+  // const res = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Authors/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allAuthors = await res.json()
+
+  // const response = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allBlogs = await response.json()
+
   const params = await props.params
   const slug = decodeURI(params.slug.join('/'))
   const post = allBlogs.find((p) => p.slug === slug)
@@ -38,8 +59,8 @@ export async function generateMetadata(props: {
   const modifiedAt = new Date(post.lastmod || post.date).toISOString()
   const authors = authorDetails.map((author) => author.name)
   let imageList = [siteMetadata.socialBanner]
-  if (post.images) {
-    imageList = typeof post.images === 'string' ? [post.images] : post.images
+  if (post?.images) {
+    imageList = typeof post?.images === 'string' ? [post?.images] : post?.images
   }
   const ogImages = imageList.map((img) => {
     return {
@@ -72,16 +93,47 @@ export async function generateMetadata(props: {
 }
 
 export const generateStaticParams = async () => {
-  const { allBlogs } = await import('contentlayer/generated')
+  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
+  // const response = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allBlogs = await response.json()
+
   return allBlogs.map((p) => ({ slug: p.slug.split('/').map((name) => decodeURI(name)) }))
 }
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
-  const { allBlogs, allAuthors } = await import('contentlayer/generated')
+  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
+  const { allAuthors } = await import('../../../.contentlayer/generated/Authors/_index.mjs')
+  // const res = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Authors/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allAuthors: any = await res.json()
+
+  // const response = await fetch(
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   {
+  //     headers: {
+  //       Accept: 'application/json',
+  //     },
+  //   }
+  // )
+  // const allBlogs: any = await response.json()
+
   const params = await props.params
   const slug = decodeURI(params.slug.join('/'))
   // Filter out drafts in production
-  const sortedCoreContents = allCoreContent(sortPosts(allBlogs))
+  const sortedCoreContents: any = allCoreContent(sortPosts(allBlogs))
   const postIndex = sortedCoreContents.findIndex((p) => p.slug === slug)
   if (postIndex === -1) {
     return notFound()
