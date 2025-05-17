@@ -1,4 +1,4 @@
-const { withContentlayer } = require('next-contentlayer2')
+// const { withContentlayer } = require('next-contentlayer2')
 
 const withBundleAnalyzer = require('@next/bundle-analyzer')({
   enabled: process.env.ANALYZE === 'true',
@@ -62,7 +62,7 @@ const unoptimized = process.env.UNOPTIMIZED ? true : undefined
  * @type {import('next/dist/next-server/server/config').NextConfig}
  **/
 module.exports = () => {
-  const plugins = [withContentlayer, withBundleAnalyzer]
+  const plugins = [withBundleAnalyzer]
   return plugins.reduce((acc, next) => next(acc), {
     output,
     basePath,
@@ -71,16 +71,18 @@ module.exports = () => {
     experimental: {
       webpackMemoryOptimizations: true,
     },
-    // outputFileTracingExcludes: {
-    //   '*': [
-    //     './.next/cache/**/*',
-    //     './node_modules/.cache/**/*',
-    //     './.contentlayer/generated/**/*',
-    //     './node_modules/@contentlayer/**/*',
-    //     '**/*.contentlayer/generated/**',
-    //     '**/.contentlayer/generated/**',
-    //   ],
-    // },
+    outputFileTracingExcludes: {
+      '*': [
+        '**/*.next/**',
+        './.next/cache/**/*',
+        '**/node_modules/**',
+        './node_modules/.cache/**/*',
+        './.contentlayer/generated/**/*',
+        './node_modules/@contentlayer/**/*',
+        '**/*.contentlayer/generated/**',
+        '**/.contentlayer/generated/**',
+      ],
+    },
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
       ignoreDuringBuilds: true,
@@ -94,14 +96,14 @@ module.exports = () => {
       ],
       unoptimized,
     },
-    async headers() {
-      return [
-        {
-          source: '/(.*)',
-          headers: securityHeaders,
-        },
-      ]
-    },
+    // async headers() {
+    //   return [
+    //     {
+    //       source: '/(.*)',
+    //       headers: securityHeaders,
+    //     },
+    //   ]
+    // },
     webpack: (config, { dev, isServer }) => {
       config.module.rules.push({
         test: /\.svg$/,

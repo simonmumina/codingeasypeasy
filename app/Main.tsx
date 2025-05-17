@@ -42,11 +42,11 @@ export default function Home({ posts }) {
                               {title}
                             </Link>
                           </h2>
-                          <div className="flex flex-wrap">
+                          {/* <div className="flex flex-wrap">
                             {tags.map((tag) => (
                               <Tag key={tag} text={tag} />
                             ))}
-                          </div>
+                          </div> */}
                         </div>
                         <div className="prose max-w-none text-gray-500 dark:text-gray-400">
                           {summary}
@@ -69,7 +69,7 @@ export default function Home({ posts }) {
           })}
         </ul>
       </div>
-      {posts.length > MAX_DISPLAY && (
+      {/* {posts.length > MAX_DISPLAY && (
         <div className="flex justify-end text-base leading-6 font-medium">
           <Link
             href="/blog"
@@ -79,7 +79,7 @@ export default function Home({ posts }) {
             All Posts &rarr;
           </Link>
         </div>
-      )}
+      )} */}
     </>
   )
 }
