@@ -67,7 +67,7 @@ const topics = [
 ]
 
 const prompt = `
-generate a long, detailed and seo friendly MDX blog post on What is the order of operations (PEMDAS/BODMAS)?. Include code examples where appropriate. The MDX should be ready to be saved to a file and should include title which is optimised for search engines, date, lastmod, tags which are optimised for search engines, draft with default as false, summary which is optimised for search engines, and author as default for example:
+generate a long, detailed and seo friendly MDX blog post on What is a Galois group and why is it important Mathematics. Include code examples where appropriate. The MDX should be ready to be saved to a file and should include title which is optimised for search engines, date, lastmod, tags which are optimised for search engines, draft with default as false, summary which is optimised for search engines, and author as default for example:
 ---
 title: 'Title of blog'
 date: '2024-10-12'
