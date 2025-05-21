@@ -1,0 +1,185 @@
+---
+title: 'Sharing Dependencies in Vue.js Module Federation: A Comprehensive Guide'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['vuejs', 'module federation', 'microfrontends', 'dependency sharing', 'webpack', 'javascript']
+draft: false
+summary: 'Learn the best practices for sharing dependencies between federated modules in Vue.js using Module Federation. This guide covers strategies for avoiding duplication, ensuring version compatibility, and optimizing performance in microfrontend architectures.'
+authors: ['default']
+---
+
+# Sharing Dependencies in Vue.js Module Federation: A Comprehensive Guide
+
+Module Federation is a powerful technique that enables the creation of microfrontend architectures. In Vue.js, it allows you to build independent, deployable applications (modules) that can share code and components at runtime.  However, one of the key challenges with Module Federation is managing shared dependencies. Without a proper strategy, you can end up with duplicated code, version conflicts, and bloated bundle sizes. This guide provides a comprehensive overview of the best ways to share dependencies between federated modules in Vue.js.
+
+## Understanding the Problem: Dependency Duplication and Version Conflicts
+
+When building microfrontends, it's common for multiple modules to rely on the same libraries (e.g., Vue, Vue Router, Vuex, Lodash, Axios). If each module bundles its own copy of these dependencies, you'll face several issues:
+
+*   **Increased Bundle Sizes:** Redundant code increases the overall size of your application, leading to longer loading times and a poor user experience.
+*   **Version Conflicts:** Different modules might use different versions of the same library, potentially causing unexpected errors and compatibility issues. Imagine a situation where Module A uses Vue 2.7 and Module B uses Vue 3.  This creates a runtime nightmare.
+*   **Performance Degradation:** Larger bundles require more time to parse and execute, negatively impacting performance.
+
+## The Solution: Leveraging `shared` Configuration in Module Federation
+
+Webpack's Module Federation plugin provides a `shared` configuration option that allows you to explicitly declare which dependencies should be shared between modules. This is the cornerstone of a successful dependency sharing strategy.
+
+Here's how it works:
+
+1.  **Define Shared Dependencies:** In each module's webpack configuration, use the `shared` option to specify the dependencies that should be shared.
+2.  **Versioning and Sharing:** When a module imports a shared dependency, Module Federation checks if a compatible version is already loaded. If so, it reuses the existing version. Otherwise, it loads the dependency from the module that is designated as the "eager" provider of that dependency.
+3.  **Eager Sharing:**  One module (typically the host application or a core library module) should be configured to eagerly load the shared dependencies. This ensures that the dependencies are available early in the application lifecycle.
+
+## Implementing Dependency Sharing in Vue.js Module Federation
+
+Let's illustrate with code examples. Consider two Vue.js modules:
+
+*   **`host` application:** The main application that hosts the microfrontends.
+*   **`remote-module`:** A microfrontend component.
+
+Both modules rely on Vue, Vue Router and Axios.
+
+**1. Host Application (`host`): webpack.config.js**
+
+```javascript
+const { defineConfig } = require('@vue/cli-service');
+const ModuleFederationPlugin = require('webpack/lib/container/ModuleFederationPlugin');
+
+module.exports = defineConfig({
+  transpileDependencies: true,
+  publicPath: 'http://localhost:8080/',  // Change this to your host's URL
+  configureWebpack: {
+    plugins: [
+      new ModuleFederationPlugin({
+        name: 'host',
+        remotes: {
+          'remote_module': 'remote_module@http://localhost:8081/remoteEntry.js', // Change to your remote's URL
+        },
+        shared: {
+          'vue': {
+            singleton: true, // Only one instance of Vue
+            eager: true,    // Load Vue immediately
+            requiredVersion: '^3.0.0', // Specify the required version
+          },
+          'vue-router': {
+            singleton: true,
+            eager: true,
+            requiredVersion: '^4.0.0',
+          },
+          'axios': {
+            singleton: true,
+            eager: true,
+            requiredVersion: '^0.21.0',
+          },
+        },
+      }),
+    ],
+  },
+  devServer: {
+      port: 8080,
+  }
+});
+```
+
+**Explanation:**
+
+*   `name`: The name of the module (important for resolving shared dependencies).
+*   `remotes`:  Defines the location of the `remoteEntry.js` file for the `remote-module`.
+*   `shared`: This is the key section.
+    *   `vue`, `vue-router`, `axios`: These are the shared dependencies.
+    *   `singleton: true`: Ensures only one instance of the library is loaded.  Essential for Vue, Vue Router, and Vuex.  If you don't set this to true, you may get errors, particularly relating to Vue Router (errors may not be immediately obvious).
+    *   `eager: true`:  Indicates that the host application should load these dependencies immediately. This makes them available to the `remote-module` as soon as it's loaded.  The first application to load the dependency *must* load it eagerly.
+    *   `requiredVersion`: Specifies the minimum required version of the library. This helps prevent version conflicts. Using semantic versioning (`^3.0.0` means "compatible with 3.0.0 and later, but less than 4.0.0") is recommended.
+
+**2. Remote Module (`remote-module`): webpack.config.js**
+
+```javascript
+const { defineConfig } = require('@vue/cli-service');
+const ModuleFederationPlugin = require('webpack/lib/container/ModuleFederationPlugin');
+
+module.exports = defineConfig({
+  transpileDependencies: true,
+  publicPath: 'http://localhost:8081/',  // Change this to your remote's URL
+  configureWebpack: {
+    plugins: [
+      new ModuleFederationPlugin({
+        name: 'remote_module',
+        exposes: {
+          './RemoteComponent': './src/components/RemoteComponent.vue',
+        },
+        shared: {
+          'vue': {
+            singleton: true,
+            requiredVersion: '^3.0.0',
+          },
+          'vue-router': {
+            singleton: true,
+            requiredVersion: '^4.0.0',
+          },
+          'axios': {
+            singleton: true,
+            requiredVersion: '^0.21.0',
+          },
+        },
+      }),
+    ],
+  },
+  devServer: {
+      port: 8081,
+  }
+});
+```
+
+**Explanation:**
+
+*   `name`:  The name of the remote module.
+*   `exposes`: Defines which components or modules are exposed for use by other modules.  Here, we're exposing `RemoteComponent.vue`.
+*   `shared`:  Similar to the host application, we define the shared dependencies. Notice that `eager` is *not* set to `true` here, because the host application is already loading these dependencies eagerly. The `requiredVersion` is still important for version compatibility checks.
+
+**3. Using the Remote Component in the Host Application**
+
+```vue
+<template>
+  <div>
+    <h1>Host Application</h1>
+    <RemoteComponent />
+  </div>
+</template>
+
+<script>
+import { defineAsyncComponent } from 'vue';
+
+export default {
+  components: {
+    RemoteComponent: defineAsyncComponent(() => import('remote_module/RemoteComponent')),
+  },
+};
+</script>
+```
+
+**Explanation:**
+
+*   We use `defineAsyncComponent` to load the remote component asynchronously.  This is crucial for Module Federation as it allows the application to fetch the remote module's code at runtime.
+*   The `import('remote_module/RemoteComponent')` statement tells Vue to load the `RemoteComponent` from the `remote_module` (as defined in the host's `remotes` configuration).
+
+## Key Considerations and Best Practices
+
+*   **Singleton Dependencies:** For libraries like Vue, Vue Router, and Vuex, setting `singleton: true` is crucial. Having multiple instances of these libraries can lead to unexpected behavior and errors.
+*   **Version Management:**  Carefully manage the versions of shared dependencies. Use `requiredVersion` to specify the compatible version range.  Consider using a package manager like `npm` or `yarn` to manage dependencies and ensure consistency across modules. Tools like `pnpm` can be particularly beneficial for monorepos.
+*   **Eager Loading Strategy:** Choose a module to be the "eager" provider for shared dependencies.  Typically, this is the host application or a core library module. Be mindful of the initial load time of this module, as it will load all eager dependencies.
+*   **Asynchronous Loading:**  Use `defineAsyncComponent` or similar techniques to load remote components asynchronously. This improves the initial load time of the host application.
+*   **Code Splitting:**  Even with shared dependencies, use code splitting techniques to break down your application into smaller chunks.  This can further improve performance.
+*   **Monorepo vs. Separate Repositories:** Module federation works with both monorepo and multi-repo setups.  In a monorepo, managing shared dependencies can be easier. Tools like Lerna or Turborepo can help streamline the process.
+*   **Testing:**  Thoroughly test your microfrontend architecture to ensure that shared dependencies are working correctly and that there are no version conflicts. Consider using end-to-end testing frameworks.
+*   **Module Federation Advanced Configuration**: The `shared` configuration supports advanced techniques like specifying a custom `package.json` path, using a `strategy` to select the right shared dependency, and configuring dependency hijacking. Refer to the webpack documentation for more information: [https://webpack.js.org/concepts/module-federation/#shared-modules](https://webpack.js.org/concepts/module-federation/#shared-modules)
+
+## Troubleshooting Common Issues
+
+*   **"Shared module is not available for eager consumption"**: This error often occurs when no module is configured to eagerly load the shared dependency.  Ensure that one module (typically the host) has `eager: true` set for the dependency.
+*   **Version Conflicts**: Double-check the `requiredVersion` settings in each module's `webpack.config.js`. Make sure the versions are compatible. Consider using a consistent version range across all modules.
+*   **Duplicate Instances of Libraries**: This usually happens if `singleton: true` is not set for shared dependencies like Vue, Vue Router, or Vuex.
+*   **Runtime Errors**: Inspect the browser console for errors related to missing modules or version mismatches. Use the browser's network tab to see which modules are being loaded and from where.
+
+## Conclusion
+
+Sharing dependencies effectively is crucial for building scalable and maintainable microfrontend architectures with Vue.js and Module Federation. By leveraging the `shared` configuration option in Webpack and following the best practices outlined in this guide, you can avoid dependency duplication, ensure version compatibility, and optimize the performance of your application. Remember to prioritize careful version management, utilize asynchronous loading, and thoroughly test your application to ensure a smooth and efficient user experience.

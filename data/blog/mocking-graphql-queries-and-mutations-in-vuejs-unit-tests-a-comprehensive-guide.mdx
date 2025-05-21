@@ -1,0 +1,726 @@
+---
+title: "Mocking GraphQL Queries and Mutations in Vue.js Unit Tests: A Comprehensive Guide"
+date: '2024-01-27'
+lastmod: '2024-01-27'
+tags: ['vue', 'graphql', 'testing', 'jest', 'vitest', 'mocking', 'unit-testing', 'apollo-client']
+draft: false
+summary: "Learn how to effectively mock GraphQL queries and mutations in your Vue.js unit tests using Jest or Vitest.  This guide provides practical examples and best practices for ensuring robust and reliable testing of your GraphQL-powered Vue components."
+authors: ['default']
+---
+
+# Mocking GraphQL Queries and Mutations in Vue.js Unit Tests: A Comprehensive Guide
+
+Testing your Vue.js components that interact with a GraphQL API is crucial for ensuring the reliability and stability of your application.  However, directly hitting a real GraphQL endpoint during unit tests can be slow, unreliable, and introduce external dependencies.  This guide will walk you through various techniques for mocking GraphQL queries and mutations in your Vue.js unit tests, allowing you to isolate and test your components in a controlled environment.
+
+## Why Mock GraphQL in Vue Tests?
+
+Mocking your GraphQL API interactions offers several key advantages:
+
+*   **Isolation:** Unit tests should focus on testing a single component in isolation. Mocking removes external dependencies on your GraphQL server.
+*   **Speed:**  Mocking eliminates network requests, significantly speeding up your test suite.
+*   **Reliability:** Real APIs can be unpredictable. Mocking provides consistent and predictable responses, ensuring your tests are reliable.
+*   **Control:** Mocking allows you to simulate different scenarios, such as loading states, errors, and specific data responses, making it easier to test edge cases.
+*   **Cost Savings:** Avoid unnecessary calls to your GraphQL server, particularly in CI/CD environments.
+
+## Prerequisites
+
+Before diving into the code, ensure you have the following:
+
+*   **Vue.js Project:**  An existing Vue.js project that uses GraphQL.
+*   **GraphQL Client:** A GraphQL client library like `apollo-client`, `vue-apollo`, or `urql`. This guide assumes you are using `vue-apollo` and `apollo-client`.
+*   **Testing Framework:** A testing framework like Jest or Vitest. This guide will provide examples for both.
+*   **Mocking Library:**  A mocking library included within Jest and Vitest (such as `jest.mock` or `vi.mock`).
+
+## Scenario:  A Simple Vue Component with a GraphQL Query
+
+Let's imagine we have a simple Vue component that fetches user data using a GraphQL query:
+
+```vue
+<template>
+  <div>
+    <div v-if="loading">Loading...</div>
+    <div v-else-if="error">Error: {{ error.message }}</div>
+    <div v-else>
+      <h1>{{ user.name }}</h1>
+      <p>Email: {{ user.email }}</p>
+    </div>
+  </div>
+</template>
+
+<script>
+import { useQuery } from '@vue/apollo-composable';
+import gql from 'graphql-tag';
+
+const GET_USER = gql`
+  query GetUser($id: ID!) {
+    user(id: $id) {
+      id
+      name
+      email
+    }
+  }
+`;
+
+export default {
+  name: 'UserProfile',
+  props: {
+    userId: {
+      type: String,
+      required: true,
+    },
+  },
+  setup(props) {
+    const { result, loading, error } = useQuery(GET_USER, {
+      id: props.userId,
+    });
+
+    return {
+      user: result,
+      loading,
+      error,
+    };
+  },
+};
+</script>
+```
+
+This component uses `vue-apollo`'s `useQuery` composable to execute a GraphQL query named `GetUser` with the `userId` prop as a variable.
+
+## Mocking with Jest
+
+Here are a few approaches to mocking the GraphQL query in Jest:
+
+### 1. Mocking the `useQuery` Composable Directly
+
+This is the simplest approach, especially when you only need to mock the result of a single query in one specific test.
+
+```javascript
+// UserProfile.spec.js (Jest)
+import { shallowMount } from '@vue/test-utils';
+import UserProfile from '@/components/UserProfile.vue';
+import { useQuery } from '@vue/apollo-composable';
+import { ref } from 'vue';
+
+jest.mock('@vue/apollo-composable', () => ({
+  useQuery: jest.fn(),
+}));
+
+describe('UserProfile.vue', () => {
+  it('renders user data when the query is successful', async () => {
+    const mockUser = { id: '1', name: 'John Doe', email: 'john.doe@example.com' };
+
+    useQuery.mockReturnValue({
+      result: ref({ user: mockUser }),
+      loading: ref(false),
+      error: ref(null),
+    });
+
+    const wrapper = shallowMount(UserProfile, {
+      props: { userId: '1' },
+    });
+
+    await wrapper.vm.$nextTick(); // Wait for the component to update
+
+    expect(wrapper.text()).toContain('John Doe');
+    expect(wrapper.text()).toContain('john.doe@example.com');
+  });
+
+  it('renders loading state', async () => {
+    useQuery.mockReturnValue({
+      result: ref(null),
+      loading: ref(true),
+      error: ref(null),
+    });
+
+    const wrapper = shallowMount(UserProfile, {
+      props: { userId: '1' },
+    });
+
+    expect(wrapper.text()).toContain('Loading...');
+  });
+
+  it('renders error state', async () => {
+    useQuery.mockReturnValue({
+      result: ref(null),
+      loading: ref(false),
+      error: ref(new Error('GraphQL Error')),
+    });
+
+    const wrapper = shallowMount(UserProfile, {
+      props: { userId: '1' },
+    });
+
+    expect(wrapper.text()).toContain('Error: GraphQL Error');
+  });
+});
+```
+
+**Explanation:**
+
+*   `jest.mock('@vue/apollo-composable', ...)`:  This line tells Jest to mock the entire `@vue/apollo-composable` module.
+*   `useQuery: jest.fn()`: We replace the real `useQuery` composable with a Jest mock function (`jest.fn()`).
+*   `useQuery.mockReturnValue(...)`:  We configure the mock function to return a specific object that mimics the expected structure of the `useQuery` composable's return value: `result`, `loading`, and `error`. We are returning `ref`s here because `useQuery` returns reactive references.
+*   `shallowMount`: We use `shallowMount` for rendering, as we're focusing on the component's template logic, not its children's behavior.
+*   `await wrapper.vm.$nextTick()`: This ensures the component has finished updating after the data has been loaded.
+*   `expect(wrapper.text()).toContain(...)`: We use Jest's `expect` to assert that the rendered output contains the expected data.
+
+### 2. Creating a Mock Apollo Provider
+
+This approach is more robust and reusable, especially when you have multiple components that rely on Apollo Client.  It involves creating a mock Apollo Provider that intercepts GraphQL requests and returns mock data.
+
+First, create a mock Apollo client:
+
+```javascript
+// mocks/apolloMockClient.js
+import { ApolloClient, InMemoryCache } from '@apollo/client/core';
+import { MockLink } from '@apollo/client/testing';
+
+const createMockApolloClient = (mocks) => {
+  return new ApolloClient({
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+};
+
+export default createMockApolloClient;
+```
+
+Now, in your test file:
+
+```javascript
+// UserProfile.spec.js (Jest)
+import { shallowMount, createLocalVue } from '@vue/test-utils';
+import UserProfile from '@/components/UserProfile.vue';
+import VueApollo from 'vue-apollo';
+import createMockApolloClient from '@/mocks/apolloMockClient';
+import gql from 'graphql-tag';
+
+const GET_USER = gql`
+  query GetUser($id: ID!) {
+    user(id: $id) {
+      id
+      name
+      email
+    }
+  }
+`;
+
+describe('UserProfile.vue with Apollo Provider', () => {
+  it('renders user data when the query is successful', async () => {
+    const mockUser = { id: '1', name: 'John Doe', email: 'john.doe@example.com' };
+    const mocks = [
+      {
+        request: {
+          query: GET_USER,
+          variables: { id: '1' },
+        },
+        result: {
+          data: {
+            user: mockUser,
+          },
+        },
+      },
+    ];
+
+    const mockApolloClient = createMockApolloClient(mocks);
+
+    const localVue = createLocalVue();
+    localVue.use(VueApollo);
+
+    const apolloProvider = new VueApollo({
+      defaultClient: mockApolloClient,
+    });
+
+    const wrapper = shallowMount(UserProfile, {
+      propsData: { userId: '1' },
+      localVue,
+      apolloProvider,
+    });
+
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('John Doe');
+    expect(wrapper.text()).toContain('john.doe@example.com');
+  });
+
+  it('handles GraphQL errors', async () => {
+    const mocks = [
+      {
+        request: {
+          query: GET_USER,
+          variables: { id: '1' },
+        },
+        error: new Error('GraphQL Error'),
+      },
+    ];
+
+    const mockApolloClient = createMockApolloClient(mocks);
+
+    const localVue = createLocalVue();
+    localVue.use(VueApollo);
+
+    const apolloProvider = new VueApollo({
+      defaultClient: mockApolloClient,
+    });
+
+    const wrapper = shallowMount(UserProfile, {
+      propsData: { userId: '1' },
+      localVue,
+      apolloProvider,
+    });
+
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Error: GraphQL Error');
+  });
+});
+```
+
+**Explanation:**
+
+*   `createMockApolloClient`:  This function creates an `ApolloClient` instance that uses `MockLink` from `@apollo/client/testing`. `MockLink` allows you to provide mock responses for specific GraphQL queries.
+*   `mocks`:  An array of mock response objects. Each object specifies a `request` (the GraphQL query and variables) and a `result` (the mock data).
+*   `createLocalVue`:  Creates a local Vue instance to avoid modifying the global Vue constructor.
+*   `localVue.use(VueApollo)`: Installs the `vue-apollo` plugin on the local Vue instance.
+*   `apolloProvider`:  A `VueApollo` instance configured with the mock Apollo client.
+*   `wrapper = shallowMount(UserProfile, { ...apolloProvider })`:  We pass the `apolloProvider` as an option to `shallowMount`, making the mock Apollo client available to the component.
+
+## Mocking with Vitest
+
+Vitest offers similar mocking capabilities to Jest. Here are equivalent examples for Vitest:
+
+### 1. Mocking the `useQuery` Composable Directly
+
+```javascript
+// UserProfile.spec.js (Vitest)
+import { mount } from '@vue/test-utils';
+import UserProfile from '@/components/UserProfile.vue';
+import { useQuery } from '@vue/apollo-composable';
+import { ref } from 'vue';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('@vue/apollo-composable', () => ({
+  useQuery: vi.fn(),
+}));
+
+describe('UserProfile.vue', () => {
+  it('renders user data when the query is successful', async () => {
+    const mockUser = { id: '1', name: 'John Doe', email: 'john.doe@example.com' };
+
+    useQuery.mockReturnValue({
+      result: ref({ user: mockUser }),
+      loading: ref(false),
+      error: ref(null),
+    });
+
+    const wrapper = mount(UserProfile, {
+      props: { userId: '1' },
+    });
+
+    expect(wrapper.text()).toContain('John Doe');
+    expect(wrapper.text()).toContain('john.doe@example.com');
+  });
+
+  it('renders loading state', async () => {
+    useQuery.mockReturnValue({
+      result: ref(null),
+      loading: ref(true),
+      error: ref(null),
+    });
+
+    const wrapper = mount(UserProfile, {
+      props: { userId: '1' },
+    });
+
+    expect(wrapper.text()).toContain('Loading...');
+  });
+
+  it('renders error state', async () => {
+    useQuery.mockReturnValue({
+      result: ref(null),
+      loading: ref(false),
+      error: ref(new Error('GraphQL Error')),
+    });
+
+    const wrapper = mount(UserProfile, {
+      props: { userId: '1' },
+    });
+
+    expect(wrapper.text()).toContain('Error: GraphQL Error');
+  });
+});
+```
+
+The primary difference here is the use of `vi` instead of `jest` for mocking functions and modules. `mount` is used for mounting components.  Also `vi.mock` requires you to import `vi` from 'vitest'.
+
+### 2. Creating a Mock Apollo Provider
+
+The same logic for the mock Apollo provider applies to Vitest. The only changes needed are using `vi` instead of `jest`:
+
+```javascript
+// mocks/apolloMockClient.js (same as before)
+import { ApolloClient, InMemoryCache } from '@apollo/client/core';
+import { MockLink } from '@apollo/client/testing';
+
+const createMockApolloClient = (mocks) => {
+  return new ApolloClient({
+    cache: new InMemoryCache(),
+    link: new MockLink(mocks),
+  });
+};
+
+export default createMockApolloClient;
+```
+
+```javascript
+// UserProfile.spec.js (Vitest)
+import { mount, createLocalVue } from '@vue/test-utils';
+import UserProfile from '@/components/UserProfile.vue';
+import VueApollo from 'vue-apollo';
+import createMockApolloClient from '@/mocks/apolloMockClient';
+import gql from 'graphql-tag';
+import { describe, it, expect } from 'vitest';
+
+const GET_USER = gql`
+  query GetUser($id: ID!) {
+    user(id: $id) {
+      id
+      name
+      email
+    }
+  }
+`;
+
+describe('UserProfile.vue with Apollo Provider', () => {
+  it('renders user data when the query is successful', async () => {
+    const mockUser = { id: '1', name: 'John Doe', email: 'john.doe@example.com' };
+    const mocks = [
+      {
+        request: {
+          query: GET_USER,
+          variables: { id: '1' },
+        },
+        result: {
+          data: {
+            user: mockUser,
+          },
+        },
+      },
+    ];
+
+    const mockApolloClient = createMockApolloClient(mocks);
+
+    const localVue = createLocalVue();
+    localVue.use(VueApollo);
+
+    const apolloProvider = new VueApollo({
+      defaultClient: mockApolloClient,
+    });
+
+    const wrapper = mount(UserProfile, {
+      propsData: { userId: '1' },
+      localVue,
+      apolloProvider,
+    });
+
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('John Doe');
+    expect(wrapper.text()).toContain('john.doe@example.com');
+  });
+
+  it('handles GraphQL errors', async () => {
+    const mocks = [
+      {
+        request: {
+          query: GET_USER,
+          variables: { id: '1' },
+        },
+        error: new Error('GraphQL Error'),
+      },
+    ];
+
+    const mockApolloClient = createMockApolloClient(mocks);
+
+    const localVue = createLocalVue();
+    localVue.use(VueApollo);
+
+    const apolloProvider = new VueApollo({
+      defaultClient: mockApolloClient,
+    });
+
+    const wrapper = mount(UserProfile, {
+      propsData: { userId: '1' },
+      localVue,
+      apolloProvider,
+    });
+
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.text()).toContain('Error: GraphQL Error');
+  });
+});
+```
+
+## Mocking Mutations
+
+The process for mocking mutations is similar to queries. You'll mock the `useMutation` composable or configure your mock Apollo client to handle the mutation.
+
+Consider a simple mutation component:
+
+```vue
+<template>
+  <button @click="updateUsername">Update Username</button>
+</template>
+
+<script>
+import { useMutation } from '@vue/apollo-composable';
+import gql from 'graphql-tag';
+
+const UPDATE_USERNAME = gql`
+  mutation UpdateUsername($id: ID!, $name: String!) {
+    updateUser(id: $id, name: $name) {
+      id
+      name
+    }
+  }
+`;
+
+export default {
+  name: 'UsernameUpdater',
+  props: {
+    userId: {
+      type: String,
+      required: true,
+    },
+  },
+  setup(props) {
+    const { mutate } = useMutation(UPDATE_USERNAME);
+
+    const updateUsername = async () => {
+      try {
+        await mutate({ id: props.userId, name: 'New Name' });
+        alert('Username updated!');
+      } catch (error) {
+        console.error('Error updating username:', error);
+        alert('Error updating username.');
+      }
+    };
+
+    return {
+      updateUsername,
+    };
+  },
+};
+</script>
+```
+
+### Mocking Mutation with Jest
+
+```javascript
+// UsernameUpdater.spec.js (Jest)
+import { shallowMount } from '@vue/test-utils';
+import UsernameUpdater from '@/components/UsernameUpdater.vue';
+import { useMutation } from '@vue/apollo-composable';
+
+jest.mock('@vue/apollo-composable', () => ({
+  useMutation: jest.fn(),
+}));
+
+describe('UsernameUpdater.vue', () => {
+  it('calls the mutation when the button is clicked', async () => {
+    const mutateMock = jest.fn();
+    useMutation.mockReturnValue({
+      mutate: mutateMock,
+      loading: false,
+      error: null,
+    });
+
+    const wrapper = shallowMount(UsernameUpdater, {
+      props: { userId: '1' },
+    });
+
+    await wrapper.find('button').trigger('click');
+
+    expect(mutateMock).toHaveBeenCalledWith({ id: '1', name: 'New Name' });
+  });
+});
+```
+
+**Explanation:**
+
+*   We mock the `useMutation` composable, providing a mock `mutate` function.
+*   We simulate a button click using `wrapper.find('button').trigger('click')`.
+*   We assert that the `mutate` function was called with the expected arguments.
+
+### Mocking Mutation with Mock Apollo Provider (Jest)
+
+```javascript
+// UsernameUpdater.spec.js (Jest)
+import { shallowMount, createLocalVue } from '@vue/test-utils';
+import UsernameUpdater from '@/components/UsernameUpdater.vue';
+import VueApollo from 'vue-apollo';
+import createMockApolloClient from '@/mocks/apolloMockClient';
+import gql from 'graphql-tag';
+
+const UPDATE_USERNAME = gql`
+  mutation UpdateUsername($id: ID!, $name: String!) {
+    updateUser(id: $id, name: $name) {
+      id
+      name
+    }
+  }
+`;
+
+describe('UsernameUpdater.vue with Apollo Provider', () => {
+  it('calls the mutation when the button is clicked', async () => {
+    const mocks = [
+      {
+        request: {
+          query: UPDATE_USERNAME,
+          variables: { id: '1', name: 'New Name' },
+        },
+        result: {
+          data: {
+            updateUser: {
+              id: '1',
+              name: 'New Name',
+            },
+          },
+        },
+      },
+    ];
+
+    const mockApolloClient = createMockApolloClient(mocks);
+
+    const localVue = createLocalVue();
+    localVue.use(VueApollo);
+
+    const apolloProvider = new VueApollo({
+      defaultClient: mockApolloClient,
+    });
+
+    const wrapper = shallowMount(UsernameUpdater, {
+      propsData: { userId: '1' },
+      localVue,
+      apolloProvider,
+    });
+
+    await wrapper.find('button').trigger('click');
+
+    // You might want to add an assertion about emitted events or changed state here.
+    // In this example, since we just alert, there isn't much to directly assert.  However,
+    // if the component were to emit an event after a successful mutation, you could assert
+    // that the event was emitted.
+  });
+});
+```
+
+### Mocking Mutation with Vitest
+
+```javascript
+// UsernameUpdater.spec.js (Vitest)
+import { mount } from '@vue/test-utils';
+import UsernameUpdater from '@/components/UsernameUpdater.vue';
+import { useMutation } from '@vue/apollo-composable';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('@vue/apollo-composable', () => ({
+  useMutation: vi.fn(),
+}));
+
+describe('UsernameUpdater.vue', () => {
+  it('calls the mutation when the button is clicked', async () => {
+    const mutateMock = vi.fn();
+    useMutation.mockReturnValue({
+      mutate: mutateMock,
+      loading: false,
+      error: null,
+    });
+
+    const wrapper = mount(UsernameUpdater, {
+      props: { userId: '1' },
+    });
+
+    await wrapper.find('button').trigger('click');
+
+    expect(mutateMock).toHaveBeenCalledWith({ id: '1', name: 'New Name' });
+  });
+});
+```
+
+### Mocking Mutation with Mock Apollo Provider (Vitest)
+
+```javascript
+// UsernameUpdater.spec.js (Vitest)
+import { mount, createLocalVue } from '@vue/test-utils';
+import UsernameUpdater from '@/components/UsernameUpdater.vue';
+import VueApollo from 'vue-apollo';
+import createMockApolloClient from '@/mocks/apolloMockClient';
+import gql from 'graphql-tag';
+import { describe, it, expect } from 'vitest';
+
+const UPDATE_USERNAME = gql`
+  mutation UpdateUsername($id: ID!, $name: String!) {
+    updateUser(id: $id, name: $name) {
+      id
+      name
+    }
+  }
+`;
+
+describe('UsernameUpdater.vue with Apollo Provider', () => {
+  it('calls the mutation when the button is clicked', async () => {
+    const mocks = [
+      {
+        request: {
+          query: UPDATE_USERNAME,
+          variables: { id: '1', name: 'New Name' },
+        },
+        result: {
+          data: {
+            updateUser: {
+              id: '1',
+              name: 'New Name',
+            },
+          },
+        },
+      },
+    ];
+
+    const mockApolloClient = createMockApolloClient(mocks);
+
+    const localVue = createLocalVue();
+    localVue.use(VueApollo);
+
+    const apolloProvider = new VueApollo({
+      defaultClient: mockApolloClient,
+    });
+
+    const wrapper = mount(UsernameUpdater, {
+      propsData: { userId: '1' },
+      localVue,
+      apolloProvider,
+    });
+
+    await wrapper.find('button').trigger('click');
+
+    // You might want to add an assertion about emitted events or changed state here.
+    // In this example, since we just alert, there isn't much to directly assert.  However,
+    // if the component were to emit an event after a successful mutation, you could assert
+    // that the event was emitted.
+  });
+});
+```
+
+## Best Practices
+
+*   **Choose the Right Approach:**  For simple components with a single query or mutation, mocking the composable directly is often sufficient. For more complex components or when you need to test multiple components, using a mock Apollo provider provides better reusability and control.
+*   **Keep Mocks Specific:**  Tailor your mock responses to the specific test case you're trying to cover. Avoid creating overly generic mocks.
+*   **Test Loading and Error States:**  Don't forget to test how your components handle loading and error scenarios.
+*   **Use Descriptive Test Names:**  Write clear and descriptive test names that explain what you're testing.
+*   **Maintain Your Mocks:**  As your GraphQL schema evolves, ensure your mocks are updated to reflect the changes.
+
+## Conclusion
+
+Mocking GraphQL queries and mutations in your Vue.js unit tests is essential for writing robust, reliable, and fast tests. By using techniques like mocking the `useQuery` and `useMutation` composables or creating a mock Apollo provider, you can isolate your components and test them in a controlled environment. Remember to focus on testing different scenarios, including loading states, errors, and successful data responses. This guide provides you with the foundational knowledge to effectively mock GraphQL in your Vue.js testing workflow, regardless of whether you use Jest or Vitest.  Happy testing!

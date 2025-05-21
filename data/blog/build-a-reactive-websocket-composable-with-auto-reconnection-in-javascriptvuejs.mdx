@@ -1,0 +1,253 @@
+---
+title: "Build a Reactive WebSocket Composable with Auto-Reconnection in JavaScript/Vue.js"
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags: ['websocket', 'reactive programming', 'javascript', 'vue.js', 'composable', 'auto-reconnect', 'real-time', 'frontend', 'reactive websocket', 'websocket tutorial']
+draft: false
+summary: "Learn how to build a robust and reactive WebSocket composable in JavaScript (specifically with Vue.js in mind) that automatically handles disconnections and reconnects, providing a seamless real-time experience for your users. This tutorial covers the core logic, reconnection strategies, and best practices."
+authors: ['default']
+---
+
+# Build a Reactive WebSocket Composable with Auto-Reconnection in JavaScript/Vue.js
+
+WebSockets are essential for building real-time applications, enabling bidirectional communication between a client and a server. However, dealing with disconnections and ensuring a stable connection can be challenging. This blog post provides a step-by-step guide on building a reactive WebSocket composable, focusing on automatic reconnection and seamless integration within a Vue.js application (though the core principles are applicable to any JavaScript framework).
+
+## Why a Composable for WebSockets?
+
+Using a composable (or hook in React terms) for your WebSocket connection offers several advantages:
+
+*   **Reusability:**  Encapsulate the WebSocket logic into a single, reusable function.
+*   **Maintainability:**  Easier to update and maintain the connection logic in one place.
+*   **Reactivity:**  Leverage reactive programming to update the UI based on the WebSocket's state.
+*   **Testability:**  Simplified testing of WebSocket interaction.
+*   **Clean Code:**  Keeps your components cleaner by abstracting away connection details.
+
+## Key Features We'll Implement
+
+Our WebSocket composable will include these core features:
+
+*   **Connection Handling:**  Establish and maintain a WebSocket connection.
+*   **Automatic Reconnection:**  Automatically attempt to reconnect upon disconnection.
+*   **Reconnection Strategy:**  Implement a backoff strategy for reconnection attempts.
+*   **State Management:**  Track the connection state (connecting, connected, disconnected, error).
+*   **Message Handling:**  Provide a mechanism for sending and receiving messages.
+*   **Error Handling:**  Gracefully handle errors during connection and message processing.
+
+## Prerequisites
+
+*   Basic understanding of JavaScript.
+*   Familiarity with Vue.js (or other reactive frameworks). While this guide focuses on Vue, the core logic can be adapted.
+*   A running WebSocket server for testing (e.g., `ws://localhost:8080`).  If you don't have one, there are many readily available simple WebSocket server implementations in various languages like Node.js or Python.
+
+## Step 1: Setting Up the Project (Vue.js Example)
+
+Create a new Vue.js project (if you don't already have one):
+
+```bash
+npm create vue@latest my-websocket-app
+cd my-websocket-app
+npm install
+```
+
+## Step 2: Creating the WebSocket Composable
+
+Create a file named `useWebSocket.js` (or `useWebSocket.ts` if you're using TypeScript) in your `src/composables` directory (create the directory if it doesn't exist).
+
+```javascript
+// src/composables/useWebSocket.js
+import { ref, onMounted, onUnmounted } from 'vue';
+
+export function useWebSocket(url) {
+  const websocket = ref(null);
+  const data = ref(null); // Reactive ref for incoming data
+  const isConnected = ref(false);
+  const connecting = ref(false);
+  const error = ref(null);
+
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 10;
+  let reconnectTimeout = null;
+
+  const connect = () => {
+    connecting.value = true;
+    websocket.value = new WebSocket(url);
+
+    websocket.value.onopen = () => {
+      console.log('WebSocket connected');
+      isConnected.value = true;
+      connecting.value = false;
+      reconnectAttempts = 0; // Reset reconnection attempts
+    };
+
+    websocket.value.onmessage = (event) => {
+      console.log('WebSocket message received:', event.data);
+      try {
+        data.value = JSON.parse(event.data); // Attempt to parse JSON
+      } catch (e) {
+        data.value = event.data; // Fallback to raw string
+        console.warn("Failed to parse JSON, using raw data:", e);
+      }
+    };
+
+    websocket.value.onclose = () => {
+      console.log('WebSocket disconnected');
+      isConnected.value = false;
+      connecting.value = false;
+      reconnect();
+    };
+
+    websocket.value.onerror = (err) => {
+      console.error('WebSocket error:', err);
+      error.value = err;
+      isConnected.value = false;
+      connecting.value = false;
+      //Reconnecting is already handled in the 'onclose' event, no need to trigger reconnect here to avoid duplicates
+    };
+  };
+
+  const reconnect = () => {
+    if (reconnectAttempts >= maxReconnectAttempts) {
+      console.warn('Max reconnection attempts reached.');
+      return;
+    }
+
+    reconnectAttempts++;
+    const timeout = Math.min(30000, (Math.pow(2, reconnectAttempts) - 1) * 1000); // Exponential backoff
+    console.log(`Attempting to reconnect in ${timeout/1000} seconds... (Attempt ${reconnectAttempts})`);
+
+    reconnectTimeout = setTimeout(() => {
+      connect();
+    }, timeout);
+  };
+
+  const send = (message) => {
+    if (websocket.value && websocket.value.readyState === WebSocket.OPEN) {
+      websocket.value.send(message);
+    } else {
+      console.warn('WebSocket not connected. Message not sent.');
+    }
+  };
+
+  const close = () => {
+    if (websocket.value) {
+      websocket.value.close();
+      clearTimeout(reconnectTimeout); // Prevent further reconnection attempts
+    }
+  };
+
+
+  onMounted(() => {
+    connect();
+  });
+
+  onUnmounted(() => {
+    close(); // Close the connection when the component unmounts
+  });
+
+  return {
+    data,
+    isConnected,
+    connecting,
+    error,
+    send,
+    close,
+  };
+}
+```
+
+**Explanation:**
+
+*   **`useWebSocket(url)`:**  The composable function takes the WebSocket URL as an argument.
+*   **`ref`:** Uses Vue's `ref` to create reactive variables for the WebSocket instance (`websocket`), received data (`data`), connection status (`isConnected`, `connecting`), and errors (`error`).  Changes to these variables will automatically trigger updates in the Vue component using the composable.
+*   **`connect()`:** Establishes the WebSocket connection and sets up event listeners for `open`, `message`, `close`, and `error`.  The `onmessage` listener attempts to parse JSON data, falling back to a raw string if parsing fails.
+*   **`reconnect()`:** Implements the reconnection logic with an exponential backoff strategy.  It increases the timeout between reconnection attempts, up to a maximum timeout and maximum attempts.  `Math.pow(2, reconnectAttempts) - 1) * 1000` calculates the timeout in milliseconds, resulting in 1s, 3s, 7s, 15s, 31s etc. delays.  It also includes a maximum of 30 seconds to prevent excessively long delays.
+*   **`send(message)`:**  Sends a message to the WebSocket server if the connection is open.
+*   **`close()`:**  Closes the WebSocket connection and clears any pending reconnection timeouts.
+*   **`onMounted()`:**  Calls `connect()` when the component is mounted.
+*   **`onUnmounted()`:**  Calls `close()` when the component is unmounted, preventing memory leaks and unnecessary reconnection attempts.
+*   **Return Values:** Returns reactive variables and functions for the component to use.
+
+## Step 3: Using the Composable in a Vue Component
+
+In your `App.vue` or another component, use the `useWebSocket` composable:
+
+```vue
+<template>
+  <div>
+    <h1>WebSocket Example</h1>
+    <p>Connection Status: <span :class="{ connected: isConnected, disconnected: !isConnected }">{{ isConnected ? 'Connected' : connecting ? 'Connecting...' : 'Disconnected' }}</span></p>
+    <p v-if="error">Error: {{ error }}</p>
+    <p>Received Data: {{ data }}</p>
+
+    <input type="text" v-model="message" placeholder="Enter message">
+    <button @click="sendMessage">Send</button>
+  </div>
+</template>
+
+<script>
+import { ref } from 'vue';
+import { useWebSocket } from './composables/useWebSocket';
+
+export default {
+  setup() {
+    const message = ref('');
+    const { data, isConnected, connecting, error, send, close } = useWebSocket('ws://localhost:8080'); // Replace with your WebSocket server URL
+
+    const sendMessage = () => {
+      send(message.value);
+      message.value = '';
+    };
+
+    return {
+      data,
+      isConnected,
+      connecting,
+      error,
+      message,
+      sendMessage,
+      close, // Optionally expose the close function if you need manual control
+    };
+  },
+  // Example styling (optional)
+  // CSS can also be in a separate style tag
+  style: `
+      .connected {
+        color: green;
+      }
+
+      .disconnected {
+        color: red;
+      }
+    `
+};
+</script>
+```
+
+**Explanation:**
+
+*   **Import `useWebSocket`:**  Imports the composable function.
+*   **Call `useWebSocket`:**  Calls the composable with the WebSocket URL and destructures the returned values.
+*   **Template Binding:**  Binds the reactive variables (`isConnected`, `data`, `error`) to the template to display the connection status, received data, and any errors.
+*   **`sendMessage()`:**  Sends the message entered in the input field to the WebSocket server.
+*   **Optional Styling:** Example styling for `connected` and `disconnected` status indicators.
+
+## Step 4: Testing and Verification
+
+1.  **Start your WebSocket server.**  Make sure it's running on the specified URL (e.g., `ws://localhost:8080`).
+2.  **Run your Vue.js application.**
+3.  **Open your browser's developer console.**  You should see log messages indicating the WebSocket connection status.
+4.  **Simulate a disconnection:**  You can either stop your WebSocket server or simulate a network disconnection using your browser's developer tools.  Observe that the composable automatically attempts to reconnect.
+5.  **Send and receive messages:**  Enter a message in the input field and click "Send."  Verify that the message is received by the server and any data sent back by the server is displayed in the "Received Data" section.
+
+## Enhancements and Considerations
+
+*   **Heartbeat (Ping/Pong):** Implement a heartbeat mechanism to detect broken connections more reliably. The client periodically sends a "ping" message, and the server responds with a "pong" message. If the client doesn't receive a "pong" within a certain timeout, it considers the connection broken and initiates reconnection.
+*   **Custom Reconnection Strategies:** You can customize the reconnection strategy further. For example, you could implement a jitter to avoid simultaneous reconnection attempts from multiple clients.
+*   **Authentication:**  If your WebSocket server requires authentication, you'll need to add authentication logic to the `connect()` function.  This might involve sending an authentication token upon connection.
+*   **Error Handling:**  Implement more robust error handling, such as displaying user-friendly error messages or logging errors to a remote server.
+*   **Message Queuing:** If you need to ensure that all messages are sent, even during a disconnection, you can implement a message queue.  Queue messages when the WebSocket is not connected and send them when the connection is re-established.
+*   **TypeScript:**  Using TypeScript provides static typing and enhances code maintainability.  The example can easily be converted to TypeScript.
+
+## Conclusion
+
+This blog post demonstrated how to build a reactive WebSocket composable with automatic reconnection using Vue.js and JavaScript. By abstracting the WebSocket logic into a reusable composable, you can simplify your application code, improve maintainability, and provide a seamless real-time experience for your users.  Remember to adapt the code and consider the enhancements mentioned above based on the specific requirements of your application.
