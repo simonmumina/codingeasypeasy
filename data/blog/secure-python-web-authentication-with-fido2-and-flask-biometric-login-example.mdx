@@ -1,0 +1,517 @@
+---
+title: 'Secure Python Web Authentication with FIDO2 and Flask: Biometric Login Example'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['python', 'fido2', 'webauthn', 'flask', 'biometric login', 'security', 'authentication', 'web development']
+draft: false
+summary: 'Implement secure web authentication with FIDO2 and Flask using biometric login for a passwordless experience. This guide provides code examples and explanations for building a robust and modern authentication system.'
+authors: ['default']
+---
+
+# Secure Python Web Authentication with FIDO2 and Flask: Biometric Login Example
+
+In today's web development landscape, security is paramount. Traditional password-based authentication methods are increasingly vulnerable to phishing, brute-force attacks, and credential stuffing. FIDO2, a standard for strong authentication, offers a more secure and user-friendly alternative, enabling passwordless logins using hardware security keys or built-in platform authenticators like fingerprint sensors or facial recognition.
+
+This blog post will guide you through building a Python web application with Flask that leverages the `python-fido2` library to implement FIDO2 authentication, including a biometric login flow. We'll cover the key concepts, code examples, and considerations for creating a robust and modern authentication system.
+
+## What is FIDO2 and WebAuthn?
+
+Before diving into the code, let's briefly explain the underlying technologies:
+
+*   **FIDO2:** The FIDO (Fast IDentity Online) Alliance defines FIDO2 as an open authentication standard that enables users to authenticate to online services using hardware security keys or platform authenticators (e.g., fingerprint scanners, facial recognition).
+*   **WebAuthn (Web Authentication API):** WebAuthn is a W3C specification that allows websites to interact with FIDO2 authenticators through the browser. It provides a secure and standardized API for registration and authentication.
+*   **CTAP (Client to Authenticator Protocol):** CTAP is the protocol used for communication between the browser (client) and the authenticator.
+
+In essence, WebAuthn provides the API, and FIDO2 provides the standard for how the browser interacts with a physical or platform authenticator.
+
+## Setting Up Your Environment
+
+First, let's set up our development environment. You'll need Python, Flask, and the `python-fido2` library.
+
+1.  **Install Python:** If you don't have Python installed, download and install the latest version from the official Python website. We recommend using Python 3.7 or higher.
+
+2.  **Create a Virtual Environment:**  A virtual environment isolates your project dependencies.
+
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Linux/macOS
+    venv\Scripts\activate   # On Windows
+    ```
+
+3.  **Install Dependencies:** Install Flask and `python-fido2` using pip.
+
+    ```bash
+    pip install flask python-fido2
+    ```
+
+## Building the Flask Application
+
+Now, let's create a basic Flask application that will handle the FIDO2 authentication flow. We'll start with a simple Flask app structure:
+
+```
+fido2-flask-example/
+├── app.py
+├── templates/
+│   ├── register.html
+│   └── login.html
+└── static/
+    └── script.js
+```
+
+### `app.py` (Flask Application)
+
+```python
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+from fido2 import fido2server, fido2rp
+from fido2.attestation import AttestationObject, AttestationStatement
+from fido2.client_data import ClientData
+from fido2.credential import CredentialData
+from fido2.server import Fido2Server, RegisterResult, AuthenticateResult
+import base64
+import os
+import hashlib
+import json
+
+app = Flask(__name__)
+app.secret_key = os.urandom(24)  # Change this in production!
+app.config['DEBUG'] = True
+
+# Dummy user database (replace with a real database in production)
+users = {}
+credentials = {}
+
+# FIDO2 Relying Party Configuration
+RP_ID = "localhost"  # Your domain name (or localhost for testing)
+RP_NAME = "FIDO2 Flask Example"
+
+# Initialize FIDO2 Server
+def create_fido_server():
+    rp = fido2rp.RelyingParty(RP_ID, RP_NAME)
+    return Fido2Server(rp)
+
+fido_server = create_fido_server()
+
+
+def base64url_encode(data: bytes) -> str:
+    """Encodes bytes to base64url string."""
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('utf-8')
+
+
+def base64url_decode(data: str) -> bytes:
+    """Decodes base64url string to bytes."""
+    data = data + '=' * (4 - len(data) % 4)
+    return base64.urlsafe_b64decode(data)
+
+
+# Registration Route
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if request.method == "GET":
+        return render_template("register.html")
+    else:
+        username = request.form["username"]
+        session['username'] = username # Store username in session
+        if username in users:
+             return "Username already exists", 400
+
+        # Generate registration options
+        registration_options, state = fido_server.register_begin(
+            user_id=os.urandom(16),  # Unique user ID
+            user_name=username,
+            display_name=username,
+            attestation='direct',
+            resident_key='required'
+        )
+        session['registration_state'] = state
+        session['username'] = username
+        return jsonify(registration_options)
+
+
+@app.route("/register/complete", methods=["POST"])
+def register_complete():
+    try:
+        username = session['username']  # Retrieve username from session
+        data = request.get_json()
+        attestation_object = base64url_decode(data['attestationObject'])
+        client_data = base64url_decode(data['clientDataJSON'])
+        state = session.pop('registration_state', None)
+
+        if not state:
+            return "No registration state", 400
+
+        register_result: RegisterResult = fido_server.register_complete(
+            state,
+            client_data,
+            attestation_object
+        )
+
+        credential_id = base64url_encode(register_result.credential_id)
+        credential_data = register_result.credential_data
+
+        users[username] = credential_id
+        credentials[credential_id] = credential_data
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        print(f"Error during registration completion: {e}")
+        return "Registration failed", 500
+
+
+# Login Route
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "GET":
+        return render_template("login.html")
+    else:
+        username = request.form["username"]
+        if username not in users:
+            return "User not found", 404
+
+        credential_id = users[username]
+
+        # Generate authentication options
+        options, state = fido_server.authenticate_begin(
+            [credential_id],
+        )
+        session['authentication_state'] = state
+        session['username'] = username
+        return jsonify(options)
+
+@app.route("/login/complete", methods=["POST"])
+def login_complete():
+    try:
+        username = session['username']
+        credential_id = users[username]
+
+        data = request.get_json()
+        authenticator_data = base64url_decode(data['authenticatorData'])
+        client_data = base64url_decode(data['clientDataJSON'])
+        signature = base64url_decode(data['signature'])
+        state = session.pop('authentication_state', None)
+
+        if not state:
+            return "No authentication state", 400
+
+        credential_data = credentials[credential_id]
+
+        auth_result: AuthenticateResult = fido_server.authenticate_complete(
+            state,
+            credential_id,
+            client_data,
+            authenticator_data,
+            signature
+        )
+
+        # Authentication successful!
+        session['logged_in'] = True
+        session['username'] = username
+
+        return jsonify({'status': 'ok'})
+
+    except Exception as e:
+        print(f"Error during login completion: {e}")
+        return "Login failed", 500
+
+
+@app.route("/protected")
+def protected():
+    if session.get('logged_in'):
+        return f"<h1>Protected Area</h1><p>Welcome, {session['username']}!</p><a href='/logout'>Logout</a>"
+    else:
+        return redirect(url_for('login'))
+
+
+@app.route("/logout")
+def logout():
+    session.pop('logged_in', None)
+    session.pop('username', None)
+    return redirect(url_for('login'))
+
+
+
+@app.route("/")
+def index():
+    return "<h1>FIDO2 Flask Example</h1><a href='/register'>Register</a> | <a href='/login'>Login</a> | <a href='/protected'>Protected</a>"
+
+
+if __name__ == "__main__":
+    app.run(host="localhost", port=5000, debug=True)
+```
+
+**Explanation:**
+
+*   **Dependencies:** Imports necessary libraries including `flask`, `fido2`, and utility modules.
+*   **Flask Setup:** Initializes the Flask application with a secret key for session management (replace with a secure, randomly generated key in production).  Sets `DEBUG` to `True` for development.
+*   **User Database:**  Uses a dictionary (`users`) as a simple in-memory user database.  **Important:**  Replace this with a proper database (e.g., PostgreSQL, MySQL) in a real-world application. Stores credential IDs and credential data.
+*   **FIDO2 Configuration:**
+    *   `RP_ID`: The Relying Party ID, which is typically your domain name.  For testing on localhost, you can use "localhost".
+    *   `RP_NAME`: The Relying Party Name, which is the name of your application.
+*   **FIDO2 Server Initialization:** Creates an instance of the `Fido2Server` using the `Fido2rp.RelyingParty` configuration.
+*   **Base64URL Encoding/Decoding:** Implements utility functions for encoding and decoding data in Base64URL format, as required by the WebAuthn specification.
+*   **Registration Route (`/register`):**
+    *   **GET:** Renders the registration form (`register.html`).
+    *   **POST:**
+        *   Retrieves the username from the form.
+        *   Generates registration options using `fido_server.register_begin()`. This method creates a challenge for the authenticator.
+        *   Stores the generated state in the session for later verification.
+        *   Returns the registration options as a JSON response to the client.  These options will be used by the browser's WebAuthn API to initiate the registration process with the authenticator.
+*   **Registration Completion Route (`/register/complete`):**
+    *   Retrieves the username and registration data from the request body.
+    *   Retrieves the registration state from the session.
+    *   Calls `fido_server.register_complete()` to verify the attestation and complete the registration process.
+    *   Stores the credential ID and credential data in the user database.
+    *   Returns a JSON response indicating success.
+*   **Login Route (`/login`):**
+    *   **GET:** Renders the login form (`login.html`).
+    *   **POST:**
+        *   Retrieves the username from the form.
+        *   Retrieves the credential ID associated with the username from the user database.
+        *   Generates authentication options using `fido_server.authenticate_begin()`.  This creates a challenge for authentication.
+        *   Stores the generated state in the session for later verification.
+        *   Returns the authentication options as a JSON response to the client.
+*   **Login Completion Route (`/login/complete`):**
+    *   Retrieves the username, credential ID, and authentication data from the request body.
+    *   Retrieves the authentication state from the session.
+    *   Retrieves the credential data from the user database using the credential ID.
+    *   Calls `fido_server.authenticate_complete()` to verify the signature and complete the authentication process.
+    *   Sets the `logged_in` flag in the session if authentication is successful.
+    *   Returns a JSON response indicating success.
+*   **Protected Route (`/protected`):**
+    *   Checks if the user is logged in by verifying the `logged_in` flag in the session.
+    *   If logged in, displays a welcome message with the username and a logout link.
+    *   If not logged in, redirects to the login page.
+*   **Logout Route (`/logout`):**
+    *   Removes the `logged_in` and `username` flags from the session.
+    *   Redirects to the login page.
+*   **Index Route (`/`):**
+    *   Displays a simple landing page with links to the registration, login, and protected areas.
+*   **Running the App:** Starts the Flask development server on `localhost:5000`.
+
+### `templates/register.html`
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Register</title>
+</head>
+<body>
+    <h1>Register</h1>
+    <form id="registrationForm">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required><br><br>
+        <button type="submit">Register</button>
+    </form>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        const registrationForm = document.getElementById("registrationForm");
+
+        registrationForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
+            const username = document.getElementById("username").value;
+
+            // 1. Send username to the server to initiate registration
+            const response = await fetch("/register", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: `username=${username}`,
+            });
+
+            if (!response.ok) {
+                alert(`Registration failed: ${response.statusText}`);
+                return;
+            }
+
+            const registrationOptions = await response.json();
+
+            // Convert base64url encoded values to ArrayBuffer
+            registrationOptions.challenge = Uint8Array.from(atob(registrationOptions.challenge), c => c.charCodeAt(0)).buffer;
+            registrationOptions.user.id = Uint8Array.from(atob(registrationOptions.user.id), c => c.charCodeAt(0)).buffer;
+            if (registrationOptions.excludeCredentials) {
+                registrationOptions.excludeCredentials = registrationOptions.excludeCredentials.map(cred => {
+                    cred.id = Uint8Array.from(atob(cred.id), c => c.charCodeAt(0)).buffer;
+                    return cred;
+                });
+            }
+
+
+            // 2. Use WebAuthn API to register the authenticator
+            try {
+                const credential = await navigator.credentials.create({
+                    publicKey: registrationOptions,
+                });
+
+                // 3. Send the registration result to the server
+                const attestationObject = btoa(String.fromCharCode(...new Uint8Array(credential.response.attestationObject)));
+                const clientDataJSON = btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON)));
+
+                const completeResponse = await fetch("/register/complete", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        attestationObject: attestationObject,
+                        clientDataJSON: clientDataJSON,
+                    }),
+                });
+
+                if (!completeResponse.ok) {
+                    alert(`Registration completion failed: ${completeResponse.statusText}`);
+                    return;
+                }
+
+                alert("Registration successful!");
+                window.location.href = "/login"; // Redirect to login page
+            } catch (error) {
+                console.error("Error during registration:", error);
+                alert(`Registration failed: ${error.message}`);
+            }
+        });
+    </script>
+</body>
+</html>
+```
+
+### `templates/login.html`
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login</title>
+</head>
+<body>
+    <h1>Login</h1>
+    <form id="loginForm">
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required><br><br>
+        <button type="submit">Login with FIDO2</button>
+    </form>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        const loginForm = document.getElementById("loginForm");
+
+        loginForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
+            const username = document.getElementById("username").value;
+
+            // 1. Send username to the server to initiate authentication
+            const response = await fetch("/login", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                body: `username=${username}`,
+            });
+
+            if (!response.ok) {
+                alert(`Login failed: ${response.statusText}`);
+                return;
+            }
+
+            const authenticationOptions = await response.json();
+
+
+            // Convert base64url encoded values to ArrayBuffer
+             authenticationOptions.challenge = Uint8Array.from(atob(authenticationOptions.challenge), c => c.charCodeAt(0)).buffer;
+             authenticationOptions.allowCredentials = authenticationOptions.allowCredentials.map(cred => {
+                 cred.id = Uint8Array.from(atob(cred.id), c => c.charCodeAt(0)).buffer;
+                 return cred;
+             });
+
+            // 2. Use WebAuthn API to authenticate
+            try {
+                const assertion = await navigator.credentials.get({
+                    publicKey: authenticationOptions,
+                });
+
+                // 3. Send the authentication result to the server
+                const authenticatorData = btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData)));
+                const clientDataJSON = btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON)));
+                const signature = btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature)));
+                const userHandle = assertion.response.userHandle ? btoa(String.fromCharCode(...new Uint8Array(assertion.response.userHandle))) : null;
+
+
+                const completeResponse = await fetch("/login/complete", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({
+                        authenticatorData: authenticatorData,
+                        clientDataJSON: clientDataJSON,
+                        signature: signature,
+                        userHandle: userHandle,
+                        id: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId)))
+                    }),
+                });
+
+                if (!completeResponse.ok) {
+                    alert(`Login completion failed: ${completeResponse.statusText}`);
+                    return;
+                }
+
+                alert("Login successful!");
+                window.location.href = "/protected"; // Redirect to protected area
+            } catch (error) {
+                console.error("Error during authentication:", error);
+                alert(`Login failed: ${error.message}`);
+            }
+        });
+    </script>
+</body>
+</html>
+```
+
+### `static/script.js` (Optional)
+
+This file can contain general JavaScript code if needed, but in this example, the JavaScript logic is embedded directly in the HTML files for simplicity.  You can move the script tags from the HTML files into this `script.js` file to keep the HTML cleaner, if desired.
+
+**Important Considerations for Production:**
+
+*   **HTTPS:**  FIDO2/WebAuthn **requires** HTTPS. You'll need a valid SSL certificate for your domain.  For local development, you can use a self-signed certificate, but browsers will typically warn you about it.
+*   **Database:**  Use a proper database (PostgreSQL, MySQL, etc.) to store user credentials and other application data.  The in-memory dictionary used in this example is only suitable for demonstration purposes.
+*   **Secret Key:** Generate a strong, random secret key for your Flask application and store it securely.
+*   **Error Handling:** Implement robust error handling and logging to capture and respond to potential issues.
+*   **User Experience:** Provide clear and user-friendly instructions for registration and login.  Consider adding visual cues or animations to guide users through the process.
+*   **Security Best Practices:**  Follow general web security best practices, such as input validation, output encoding, and protection against cross-site scripting (XSS) and cross-site request forgery (CSRF) attacks.
+*   **Attestation Verification:** Implement proper attestation verification to ensure that the authenticators being used are genuine and trusted.  This is a crucial step in preventing attacks involving rogue or compromised authenticators. The `python-fido2` library provides tools to assist with this process.
+*   **Metadata Service:**  Consider using a metadata service to obtain information about authenticators and their security characteristics.  This can help you make informed decisions about which authenticators to trust.  The FIDO Alliance provides a metadata service, and there are also commercial options available.
+*   **Resident Key (rk) vs. Discoverable Credentials:** The example uses  `resident_key='required'`, which means the authenticator stores the private key and the Relying Party ID (RPID) directly on the authenticator. This enables *discoverable credentials* (also known as passwordless login), where the user doesn't have to select which credential to use; the browser automatically prompts for authentication when the user visits the site. However, not all authenticators support resident keys.  If you need to support a wider range of authenticators, you can use `resident_key='preferred'` or `resident_key='discouraged'`. In these cases, the user will typically need to select which credential to use during the authentication process.
+* **User Verification:** The `userVerification` parameter controls whether the user is required to perform a local verification step (e.g., fingerprint, PIN) during authentication. Set it to `required` for increased security.
+
+## Testing the Application
+
+1.  **Run the Flask Application:**
+
+    ```bash
+    python app.py
+    ```
+
+2.  **Access the Application:** Open your web browser and navigate to `http://localhost:5000`.
+
+3.  **Register:** Click the "Register" link, enter a username, and click "Register". Your browser will prompt you to use your security key or biometric sensor.  Follow the prompts to complete the registration.
+
+4.  **Login:** Click the "Login" link, enter the same username, and click "Login with FIDO2". Your browser will prompt you to use your security key or biometric sensor again.  Follow the prompts to complete the login.
+
+5.  **Protected Area:** After successful login, you should be redirected to the protected area.
+
+## Enhancements and Further Exploration
+
+*   **Database Integration:** Integrate a real database (e.g., PostgreSQL, MySQL) to store user credentials securely.
+*   **Attestation Verification:** Implement attestation verification to ensure the authenticity and trustworthiness of the authenticators.
+*   **User Interface:** Improve the user interface with better styling and error handling.
+*   **Multi-Factor Authentication (MFA):** Combine FIDO2 with other authentication factors (e.g., TOTP, SMS) for enhanced security.
+*   **Explore `fido2.server` Options:**  Experiment with different options provided by the `fido2.server` module, such as customizing the attestation formats, setting credential management policies, and handling errors.
+*   **TOTP as a fallback:** If FIDO2 fails for some reason (e.g., authenticator unavailable), offer TOTP as a fallback authentication method.
+*  **Handle edge cases:**  For example, what if the user loses their authenticator?  Implement a recovery mechanism (e.g., recovery codes).
+
+## Conclusion
+
+This blog post provided a comprehensive guide to implementing FIDO2 authentication with Flask and the `python-fido2` library. By leveraging FIDO2, you can significantly enhance the security of your web applications and provide a passwordless, user-friendly authentication experience. Remember to carefully consider the security implications and best practices discussed in this post to build a robust and reliable authentication system. This combination of FIDO2, WebAuthn, and Flask provides a solid foundation for building truly secure web applications.

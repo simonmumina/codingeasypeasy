@@ -1,11 +1,11 @@
 import { MetadataRoute } from 'next'
-// import { allBlogs } from 'contentlayer/generated'
+import { allBlogs } from 'contentlayer/generated'
 import siteMetadata from '@/data/siteMetadata'
 
 export const dynamic = 'force-static'
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const { allBlogs } = await import('../.contentlayer/generated/Blog/_index.mjs')
+  // const { allBlogs } = await import('../.contentlayer/generated/Blog/_index.json')
   // const response = await fetch(
   //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.json`
   // )

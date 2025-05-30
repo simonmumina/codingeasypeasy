@@ -4,7 +4,7 @@ import 'katex/dist/katex.css'
 import { components } from '@/components/MDXComponents'
 import { MDXLayoutRenderer } from 'pliny/mdx-components'
 import { sortPosts, coreContent, allCoreContent } from 'pliny/utils/contentlayer'
-// import { allBlogs, allAuthors } from 'contentlayer/generated'
+import { allBlogs, allAuthors } from 'contentlayer/generated'
 import type { Authors, Blog } from '../../../.contentlayer/generated/types.d.ts'
 import PostLayout from '@/layouts/PostLayout'
 import { Metadata } from 'next'
@@ -21,10 +21,10 @@ const layouts = {
 export async function generateMetadata(props: {
   params: Promise<{ slug: string[] }>
 }): Promise<Metadata | undefined> {
-  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
-  const { allAuthors } = await import('../../../.contentlayer/generated/Authors/_index.mjs')
+  // const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.json')
+  // const { allAuthors } = await import('../../../.contentlayer/generated/Authors/_index.json')
   // const res = await fetch(
-  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Authors/_index.mjs`,
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Authors/_index.json`,
   //   {
   //     headers: {
   //       Accept: 'application/json',
@@ -34,7 +34,7 @@ export async function generateMetadata(props: {
   // const allAuthors = await res.json()
 
   // const response = await fetch(
-  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.json`,
   //   {
   //     headers: {
   //       Accept: 'application/json',
@@ -93,9 +93,9 @@ export async function generateMetadata(props: {
 }
 
 export const generateStaticParams = async () => {
-  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
+  // const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.json')
   // const response = await fetch(
-  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.json`,
   //   {
   //     headers: {
   //       Accept: 'application/json',
@@ -108,10 +108,10 @@ export const generateStaticParams = async () => {
 }
 
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
-  const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.mjs')
-  const { allAuthors } = await import('../../../.contentlayer/generated/Authors/_index.mjs')
+  // const { allBlogs } = await import('../../../.contentlayer/generated/Blog/_index.json')
+  // const { allAuthors } = await import('../../../.contentlayer/generated/Authors/_index.json')
   // const res = await fetch(
-  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Authors/_index.mjs`,
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Authors/_index.json`,
   //   {
   //     headers: {
   //       Accept: 'application/json',
@@ -121,7 +121,7 @@ export default async function Page(props: { params: Promise<{ slug: string[] }> 
   // const allAuthors: any = await res.json()
 
   // const response = await fetch(
-  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.mjs`,
+  //   `${process.env.NEXT_PUBLIC_CONTENTLAYER_URL}/contentlayer/generated/Blog/_index.json`,
   //   {
   //     headers: {
   //       Accept: 'application/json',

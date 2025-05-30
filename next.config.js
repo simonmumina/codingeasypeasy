@@ -6,14 +6,14 @@ const withBundleAnalyzer = require('@next/bundle-analyzer')({
 
 // You might need to insert additional domains in script-src if you are using external services
 const ContentSecurityPolicy = `
-  default-src 'self' https://brandonmarketing.org/;
-  script-src 'self' 'unsafe-eval' 'unsafe-inline' giscus.app analytics.umami.is https://va.vercel-scripts.com/ https://www.googletagmanager.com/ https://vercel.live/ https://brandonmarketing.org/;
+  default-src 'self';
+  script-src 'self' 'unsafe-eval' 'unsafe-inline' giscus.app analytics.umami.is https://va.vercel-scripts.com/ https://www.googletagmanager.com/ https://vercel.live/;
   style-src 'self' 'unsafe-inline';
   img-src * blob: data:;
-  media-src *.s3.amazonaws.com https://brandonmarketing.org/;
+  media-src *.s3.amazonaws.com;
   connect-src *;
-  font-src 'self' https://fonts.gstatic.com/ https://brandonmarketing.org/;
-  frame-src giscus.app https://vercel.live/ https://brandonmarketing.org/;
+  font-src 'self' https://fonts.gstatic.com/;
+  frame-src giscus.app https://vercel.live/;
 `
 
 const securityHeaders = [
@@ -68,8 +68,10 @@ module.exports = () => {
     basePath,
     reactStrictMode: true,
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
+    swcMinify: false,
     experimental: {
       webpackMemoryOptimizations: true,
+      swcMinify: false,
     },
     outputFileTracingExcludes: {
       '*': [
