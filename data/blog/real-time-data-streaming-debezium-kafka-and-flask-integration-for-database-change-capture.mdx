@@ -1,0 +1,392 @@
+---
+title: 'Real-Time Data Streaming: Debezium, Kafka, and Flask Integration for Database Change Capture'
+date: '2024-02-29'
+lastmod: '2024-03-05'
+tags:
+  [
+    'Debezium',
+    'Kafka',
+    'Flask',
+    'Database Change Capture',
+    'CDC',
+    'Real-Time Data',
+    'Streaming',
+    'PostgreSQL',
+    'MySQL',
+    'Python',
+  ]
+draft: false
+summary: 'Learn how to build a real-time data streaming pipeline using Debezium for capturing database changes, Kafka for message queuing, and Flask for creating a real-time API to consume these changes.  This comprehensive guide includes code examples and step-by-step instructions for integrating these technologies.'
+authors: ['default']
+---
+
+# Real-Time Data Streaming: Debezium, Kafka, and Flask Integration for Database Change Capture (CDC)
+
+In today's data-driven world, real-time access to database changes is crucial for applications like auditing, reporting, caching, and real-time analytics. **Change Data Capture (CDC)** is a design pattern used to track and act upon changes made to a database. This blog post will guide you through building a real-time data streaming pipeline using three powerful open-source technologies: **Debezium, Kafka, and Flask.**
+
+**What we'll cover:**
+
+- **Introduction to Debezium, Kafka, and Flask**
+- **Setting up your environment (Docker Compose, PostgreSQL, Kafka)**
+- **Configuring Debezium Connector for PostgreSQL (or MySQL)**
+- **Consuming Kafka messages with a Flask API**
+- **Handling schema evolution**
+- **Error handling and monitoring**
+- **Example use cases**
+- **Conclusion and further exploration**
+
+## Why Debezium, Kafka, and Flask?
+
+- **Debezium:** An open-source distributed platform for CDC. It captures row-level changes in your databases (e.g., PostgreSQL, MySQL, MongoDB, etc.) and streams those changes into Kafka topics. Debezium reliably captures changes, even during restarts or failures. It leverages database transaction logs to ensure data consistency.
+
+- **Kafka:** A distributed, fault-tolerant, high-throughput streaming platform. It acts as a central data hub, receiving changes from Debezium and allowing multiple consumers (like our Flask API) to access the data in real-time. Kafka's ability to handle high volumes of data makes it ideal for production environments.
+
+- **Flask:** A lightweight and flexible Python web framework. We'll use Flask to create a simple API that subscribes to the Kafka topic and serves the real-time database changes to our clients. Flask's simplicity allows us to quickly build a RESTful API without unnecessary overhead.
+
+## Setting Up Your Environment
+
+We'll use Docker Compose to easily set up our environment with PostgreSQL, Kafka, Zookeeper, and Kafka Connect (where Debezium runs). Create a `docker-compose.yml` file with the following content:
+
+```yaml
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - '2181:2181'
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    hostname: kafka
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - '9092:9092'
+      - '9094:9094'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+  postgres:
+    image: postgres:14
+    hostname: postgres
+    container_name: postgres
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: debezium
+      POSTGRES_PASSWORD: dbz
+      POSTGRES_DB: inventory
+
+  kafka-connect:
+    image: debezium/connect:2.4
+    hostname: kafka-connect
+    container_name: kafka-connect
+    depends_on:
+      - kafka
+      - postgres
+    ports:
+      - '8083:8083'
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: 'false'
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: 'false'
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: '1'
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: '1'
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: '1'
+      CONNECT_PLUGIN_PATH: /kafka/connect/debezium-connector-postgresql
+
+  debezium-ui:
+    image: quay.io/debezium/debezium-ui:2.4
+    container_name: debezium-ui
+    ports:
+      - 8080:8080
+    environment:
+      KAFKA_CONNECT_URI: http://kafka-connect:8083
+    depends_on:
+      - kafka-connect
+```
+
+**Explanation:**
+
+- **zookeeper:** Apache Zookeeper, used by Kafka for managing cluster state.
+- **kafka:** Kafka broker. We expose ports 9092 (internal communication) and 9094 (external access).
+- **postgres:** PostgreSQL database. We'll use this database to capture changes. The `inventory` database, user `debezium`, and password `dbz` are configured.
+- **kafka-connect:** Kafka Connect worker running the Debezium connector. This container connects to the Kafka cluster and exposes port 8083 for configuration. We set environment variables for the converters, replication factors, and plugin path. Importantly, we are using the `debezium/connect` image which is preconfigured for Debezium, and the `CONNECT_PLUGIN_PATH` points to where the PostgreSQL connector is installed within the container.
+- **debezium-ui:** A web UI for managing Debezium connectors. It connects to the Kafka Connect worker and provides a user-friendly interface. It's optional, but highly recommended.
+
+Run `docker-compose up -d` in the directory containing the `docker-compose.yml` file. This will start all the containers in detached mode.
+
+## Configuring Debezium Connector for PostgreSQL
+
+1.  **Create the Database and Table:**
+
+    Connect to the PostgreSQL database using `psql -h localhost -U debezium -d inventory` and create a sample table:
+
+    ```sql
+    CREATE TABLE products (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        price DECIMAL(10, 2)
+    );
+
+    INSERT INTO products (name, description, price) VALUES
+    ('Laptop', 'High-performance laptop', 1200.00),
+    ('Mouse', 'Wireless mouse', 25.00),
+    ('Keyboard', 'Mechanical keyboard', 100.00);
+    ```
+
+2.  **Create a Publication:**
+    For Debezium to work with Postgres, you need to create a publication.
+
+    ```sql
+    CREATE PUBLICATION dbz_publication FOR ALL TABLES;
+    ```
+
+3.  **Register the Debezium Connector:**
+
+    You can use the Debezium UI (accessible at `http://localhost:8080`) or send a POST request to the Kafka Connect API (`http://localhost:8083/connectors`). The following JSON payload configures the Debezium PostgreSQL connector:
+
+    ```json
+    {
+      "name": "inventory-connector",
+      "config": {
+        "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+        "tasks.max": "1",
+        "database.hostname": "postgres",
+        "database.port": "5432",
+        "database.user": "debezium",
+        "database.password": "dbz",
+        "database.dbname": "inventory",
+        "database.server.name": "inventory",
+        "schema.history.internal.kafka.bootstrap.servers": "kafka:9092",
+        "schema.history.internal.kafka.topic": "schema-changes.inventory",
+        "table.include.list": "public.products",
+        "plugin.name": "pgoutput",
+        "publication.name": "dbz_publication"
+      }
+    }
+    ```
+
+    **Explanation of the configuration properties:**
+
+    - `connector.class`: Specifies the Debezium connector class for PostgreSQL.
+    - `tasks.max`: Number of tasks to run for the connector (usually 1).
+    - `database.hostname`, `database.port`, `database.user`, `database.password`, `database.dbname`: Connection details for your PostgreSQL database.
+    - `database.server.name`: A logical name for your database. This is used as a prefix for Kafka topic names (e.g., `inventory.public.products`). This is crucial for distinguishing between different database sources.
+    - `schema.history.internal.kafka.bootstrap.servers`: Kafka brokers used for storing schema history.
+    - `schema.history.internal.kafka.topic`: Kafka topic used to store schema changes. This is essential for handling schema evolution.
+    - `table.include.list`: A comma-separated list of tables to monitor (using the format `schema.table`). In our case, we're only monitoring the `products` table in the `public` schema.
+      - `plugin.name`: "pgoutput" instructs debezium to use the logical replication features.
+      - `publication.name`: Name of the publication we created above.
+
+    You can send this configuration using `curl`:
+
+    ```bash
+    curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors -d @connector.json
+    ```
+
+    Where `connector.json` is a file containing the JSON configuration above.
+
+4.  **Verify the Connector:**
+
+    Use the Debezium UI or send a GET request to `http://localhost:8083/connectors` to verify that the `inventory-connector` is running.
+
+5.  **Test the connection:**
+
+Perform a `UPDATE products set price = 1000.00 where id = 1` and check the kafka topic `inventory.public.products`. You should see a message containing the update details.
+
+## Consuming Kafka Messages with a Flask API
+
+Now, let's create a Flask application to consume messages from the Kafka topic.
+
+1.  **Install Dependencies:**
+
+    Create a Python virtual environment and install the required libraries:
+
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install Flask kafka-python
+    ```
+
+2.  **Create the Flask Application:**
+
+    Create a file named `app.py` with the following content:
+
+    ```plaintext
+    from flask import Flask, jsonify
+    from kafka import KafkaConsumer
+    import json
+
+    app = Flask(__name__)
+
+    KAFKA_TOPIC = 'inventory.public.products'  # Replace with your actual topic name
+    KAFKA_BOOTSTRAP_SERVERS = 'localhost:9092' # Replace with your Kafka brokers
+
+    consumer = KafkaConsumer(
+        KAFKA_TOPIC,
+        bootstrap_servers=[KAFKA_BOOTSTRAP_SERVERS],
+        auto_offset_reset='earliest',
+        enable_auto_commit=True,
+        group_id='my-group', # Consumer group ID
+        value_deserializer=lambda x: json.loads(x.decode('utf-8'))
+    )
+
+
+    @app.route('/events')
+    def events():
+        messages = []
+        for message in consumer:
+            messages.append(message.value)
+            #Limit to 10 messages to avoid overwhelming the server
+            if len(messages) >= 10:
+                break
+
+        return jsonify(messages)
+
+    if __name__ == '__main__':
+        app.run(debug=True)
+    ```
+
+    **Explanation:**
+
+    - We import necessary modules from Flask and `kafka-python`.
+    - We define `KAFKA_TOPIC` and `KAFKA_BOOTSTRAP_SERVERS` with your Kafka topic and broker addresses.
+    - We create a `KafkaConsumer` instance, subscribing to the specified topic. We configure `auto_offset_reset='earliest'` to start consuming from the beginning of the topic if no offset is stored. `enable_auto_commit=True` enables automatic offset committing, ensuring that processed messages are not re-consumed. `group_id` is a consumer group ID, allowing multiple consumers to read from the same topic without duplicating messages. The `value_deserializer` deserializes the message value from JSON to a Python dictionary.
+    - The `/events` route iterates through the consumer, retrieves the message value (which is a JSON object representing the database change), and appends it to a list.
+    - Finally, we return the list of messages as a JSON response.
+
+3.  **Run the Flask Application:**
+
+    ```bash
+    python app.py
+    ```
+
+4.  **Test the API:**
+
+    Open your browser or use `curl` to access `http://localhost:5000/events`. You should see a JSON response containing the database change events.
+
+    Now, perform some CRUD operations on the `products` table in your PostgreSQL database (e.g., insert, update, delete rows). Refresh the `/events` endpoint to see the corresponding changes reflected in the API response.
+
+## Understanding the Kafka Message Structure
+
+The messages in the Kafka topic published by Debezium have a specific structure. Each message contains information about the type of operation (insert, update, delete), the before and after state of the row, and metadata about the source database.
+
+Here's a simplified example of a Kafka message for an update operation:
+
+```json
+{
+  "schema": {
+    "type": "struct",
+    "fields": [
+      // ... schema definition ...
+    ],
+    "payload": {
+      "before": {
+        "id": 1,
+        "name": "Laptop",
+        "description": "High-performance laptop",
+        "price": 1200.0
+      },
+      "after": {
+        "id": 1,
+        "name": "Laptop Pro",
+        "description": "High-performance laptop, updated",
+        "price": 1500.0
+      },
+      "source": {
+        "version": "2.4.0.Final",
+        "connector": "postgresql",
+        "name": "inventory",
+        "ts_ms": 1709123456789,
+        "snapshot": "false",
+        "db": "inventory",
+        "sequence": null,
+        "schema": "public",
+        "table": "products",
+        "txId": 567,
+        "lsn": 12345678,
+        "xmin": null
+      },
+      "op": "u", // Operation type: 'c' for create, 'u' for update, 'd' for delete
+      "ts_ms": 1709123456790, // Timestamp of the change
+      "transaction": null
+    }
+  }
+}
+```
+
+**Key Fields:**
+
+- `payload.before`: The state of the row before the change (if applicable). This will be `null` for insert operations.
+- `payload.after`: The state of the row after the change. This will be `null` for delete operations.
+- `payload.source`: Metadata about the source database, including the connector version, database name, table name, and timestamp of the change.
+- `payload.op`: The operation type: `'c'` for create (insert), `'u'` for update, `'d'` for delete, `'r'` for read (initial snapshot).
+- `schema`: Contains the schema of the data. It's important to handle schema evolution.
+
+## Handling Schema Evolution
+
+Database schemas are rarely static. As your application evolves, you'll likely need to add, modify, or remove columns from your tables. Debezium and Kafka Connect provide mechanisms for handling schema evolution:
+
+- **Schema Registry:** A centralized repository for managing Avro schemas. Debezium can be configured to use a schema registry to store and retrieve schemas. When the schema of a table changes, Debezium will automatically update the schema in the registry. Consumers can then use the schema registry to deserialize the messages correctly. While this setup is much more robust, it's outside the scope of this introductory guide.
+
+- **JSON Converter with Schemas Enabled (Not Recommended for Production):** In our `docker-compose.yml` we specifically disabled schema registry because it makes the tutorial simpler and easier to get started with. However, this should be avoided for production.
+
+  Even without a Schema Registry, Debezium includes the schema along with the payload. This is why we see the "schema" field in our Kafka messages. The tradeoff is that the messages are significantly larger because the schema must be included along with every message. This is generally less performant but good enough for testing and smaller projects.
+
+In our Flask application, we can access the schema using `message.value['schema']`. You can use this information to dynamically adapt your application to handle different schema versions. A more advanced approach would involve caching the schema and updating it only when a new version is detected.
+
+## Error Handling and Monitoring
+
+- **Debezium Connector Monitoring:** Use the Debezium UI or the Kafka Connect API to monitor the status of your Debezium connector. Check for errors, restarts, and lag (the time difference between the database change and the message being produced to Kafka).
+
+- **Kafka Monitoring:** Use Kafka monitoring tools (e.g., Kafka Manager, Burrow, Prometheus) to monitor the health of your Kafka cluster, including broker status, topic lag, and consumer group lag.
+
+- **Flask Application Logging:** Implement robust logging in your Flask application to track message consumption, API requests, and any errors that occur.
+
+- **Dead Letter Queue (DLQ):** Configure a DLQ in Kafka for messages that cannot be processed by the consumer. This allows you to investigate and resolve issues without losing data. You can configure a DLQ by creating a separate Kafka topic and routing messages that fail processing to that topic.
+
+## Example Use Cases
+
+- **Real-time Dashboards:** Build dashboards that display real-time data from your database, updating automatically as changes occur.
+- **Auditing:** Track all changes made to your database for compliance and security purposes.
+- **Cache Invalidation:** Automatically invalidate cached data when the underlying data changes.
+- **Real-time Analytics:** Perform real-time analytics on database changes to identify trends and patterns.
+- **Microservices Communication:** Use Debezium and Kafka to enable asynchronous communication between microservices, allowing them to react to database changes in other services.
+
+## Conclusion and Further Exploration
+
+This blog post has provided a comprehensive guide to building a real-time data streaming pipeline using Debezium, Kafka, and Flask. You've learned how to set up your environment, configure Debezium connectors, consume Kafka messages with a Flask API, and handle schema evolution.
+
+**Further Exploration:**
+
+- **Debezium Documentation:** [https://debezium.io/documentation/](https://debezium.io/documentation/)
+- **Kafka Documentation:** [https://kafka.apache.org/documentation/](https://kafka.apache.org/documentation/)
+- **Flask Documentation:** [https://flask.palletsprojects.com/](https://flask.palletsprojects.com/)
+- **Schema Registry:** Explore using a Schema Registry for more robust schema management.
+- **Kafka Streams:** Learn about Kafka Streams for building real-time stream processing applications directly within Kafka.
+- **Consider moving to a Cloud Provider:** The services described can all be found on AWS, Azure, and Google Cloud. Managed services will take away a lot of the administrative burden.
+
+By leveraging these technologies, you can unlock the power of real-time data and build innovative applications that respond to changes in your data as they happen. Good luck!

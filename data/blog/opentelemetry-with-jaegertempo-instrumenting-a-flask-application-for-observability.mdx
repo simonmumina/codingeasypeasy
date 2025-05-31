@@ -1,0 +1,328 @@
+---
+title: 'OpenTelemetry with Jaeger/Tempo: Instrumenting a Flask Application for Observability'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags:
+  [
+    'OpenTelemetry',
+    'Jaeger',
+    'Tempo',
+    'Flask',
+    'Python',
+    'Observability',
+    'Tracing',
+    'Metrics',
+    'Logging',
+    'Instrumentation',
+  ]
+draft: false
+summary: 'Learn how to instrument a Flask application with OpenTelemetry and export telemetry data to Jaeger or Tempo for comprehensive observability. This guide covers tracing, metrics, and logging configuration with code examples.'
+authors: ['default']
+---
+
+# OpenTelemetry with Jaeger/Tempo: Instrumenting a Flask Application for Observability
+
+In today's complex and distributed systems, observability is paramount. It allows us to understand the internal states of our applications based on the data they produce, helping us quickly identify and resolve issues. OpenTelemetry (OTel) is a vendor-neutral, open-source observability framework that provides a unified standard for collecting and exporting telemetry data.
+
+This blog post will guide you through instrumenting a Flask application with OpenTelemetry and exporting the data to two popular backends: Jaeger and Tempo. Jaeger is a distributed tracing system, while Tempo is a high-scale distributed tracing backend. We'll cover tracing, metrics, and logging, providing code examples along the way.
+
+## Why OpenTelemetry?
+
+OpenTelemetry offers several advantages:
+
+- **Vendor Neutrality:** Avoid vendor lock-in. You can switch between observability backends without modifying your application code.
+- **Standardization:** Provides a consistent API for collecting telemetry data, simplifying instrumentation.
+- **Extensibility:** Supports various programming languages and frameworks through SDKs and auto-instrumentation.
+- **Scalability:** Designed for handling high volumes of telemetry data in modern distributed systems.
+
+## Prerequisites
+
+Before we begin, make sure you have the following installed:
+
+- **Python:** Version 3.7 or higher.
+- **pip:** Python package installer.
+- **Docker:** (Optional) For running Jaeger or Tempo locally.
+
+## Setting up the Flask Application
+
+Let's create a simple Flask application:
+
+```plaintext
+# app.py
+from flask import Flask
+import time
+
+app = Flask(__name__)
+
+@app.route('/')
+def hello_world():
+    time.sleep(0.1)  # Simulate some work
+    return 'Hello, World!'
+
+@app.route('/error')
+def error_route():
+    raise ValueError("Simulated Error!")
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+Save this file as `app.py`. Now, let's install Flask:
+
+```bash
+pip install Flask
+```
+
+## Installing OpenTelemetry Dependencies
+
+Now, we'll install the necessary OpenTelemetry packages:
+
+```bash
+pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc opentelemetry-instrumentation-flask opentelemetry-instrumentation-requests opentelemetry-instrumentation-logging
+```
+
+Here's a breakdown of these packages:
+
+- **`opentelemetry-api`**: The OpenTelemetry API, defining the interfaces for tracing, metrics, and logging.
+- **`opentelemetry-sdk`**: The OpenTelemetry SDK, providing the implementation of the API.
+- **`opentelemetry-exporter-otlp-proto-grpc`**: Exporter for sending telemetry data in OTLP format using gRPC. We'll use this for both Jaeger and Tempo, though you could use `opentelemetry-exporter-jaeger-thrift` if you're using Jaeger and prefer the Thrift protocol.
+- **`opentelemetry-instrumentation-flask`**: Instrumentation for automatically collecting telemetry data from Flask applications.
+- **`opentelemetry-instrumentation-requests`**: Instrumentation for automatically collecting telemetry data from HTTP requests made using the `requests` library.
+- **`opentelemetry-instrumentation-logging`**: Instrumentation for capturing logging events and associating them with traces.
+
+## Configuring OpenTelemetry
+
+Next, we'll configure OpenTelemetry to collect and export telemetry data. Create a file named `otel_config.py`:
+
+```plaintext
+# otel_config.py
+from opentelemetry import trace, metrics, context
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, ConsoleMetricExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
+from opentelemetry.context import set_global_context
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.instrumentation.logging import LoggingInstrumentor
+import logging
+import os
+
+# Service name is required for some backends (e.g. Jaeger)
+service_name = os.environ.get("OTEL_SERVICE_NAME", "my-flask-app")
+
+# Configure OTLP exporter for Jaeger or Tempo
+otlp_endpoint = os.environ.get("OTLP_ENDPOINT", "http://localhost:4317") # Default OTLP endpoint
+
+resource = Resource.create({"service.name": service_name})
+
+# Configure Trace Provider
+trace_provider = TracerProvider(resource=resource)
+# Choose your exporter based on environment variables or configuration
+span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True) # insecure=True for local dev without TLS
+trace_processor = BatchSpanProcessor(span_exporter)
+trace_provider.add_span_processor(trace_processor)
+trace.set_tracer_provider(trace_provider)
+
+
+# Configure Metric Provider
+metric_reader = PeriodicExportingMetricReader(
+    exporter=OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True),
+    export_interval_millis=5000 # Export every 5 seconds
+)
+metrics_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
+metrics.set_meter_provider(metrics_provider)
+
+
+# Configure Logger
+logging.basicConfig(level=logging.INFO) # Set root logger level
+
+def configure_otel(app):
+    # Instrument Flask
+    FlaskInstrumentor().instrument_app(app)
+    # Instrument Requests
+    RequestsInstrumentor().instrument()
+    # Instrument Logging
+    LoggingInstrumentor().instrument()
+    return app
+
+# Example usage:
+if __name__ == '__main__':
+  #This is for showing the configuration only, doesn't actually run the app.
+  print("OTEL configuration successful, ensure Flask app is using it")
+  print(f"OTEL Endpoint set to {otlp_endpoint}")
+
+
+```
+
+**Explanation:**
+
+1.  **Import necessary modules:** We import the required OpenTelemetry classes.
+2.  **Resource Configuration:** We define a resource that describes our application, including its service name. The service name is crucial for identifying your application in the observability backend.
+3.  **Trace Provider Configuration:**
+    - We create a `TracerProvider` and associate it with the resource.
+    - We configure an `OTLPSpanExporter` to send trace data to the specified OTLP endpoint (Jaeger or Tempo). The default is `http://localhost:4317`.
+    - We use a `BatchSpanProcessor` to batch spans before exporting, improving performance.
+    - We set the `TracerProvider` as the global tracer provider.
+4.  **Metric Provider Configuration:**
+    - We create a `PeriodicExportingMetricReader` to export metrics periodically.
+    - We configure an `OTLPMetricExporter` to send metric data to the OTLP endpoint.
+    - We set the `MeterProvider` as the global meter provider.
+5.  **Logging Instrumentor Configuration:**
+    - We instrument the logging module to automatically capture logs and associate them with the current trace (if any).
+6.  **Instrumentation:** The `configure_otel` function instruments the Flask application and the `requests` library, automatically collecting telemetry data. This function is passed the Flask `app` object and is responsible for calling `instrument_app` from `FlaskInstrumentor`.
+7.  **OTLP Endpoint:** Uses an environment variable `OTLP_ENDPOINT` to configure the endpoint for sending telemetry data. This allows you to easily switch between Jaeger and Tempo.
+
+## Integrating OpenTelemetry with the Flask Application
+
+Now, let's modify our `app.py` to use the OpenTelemetry configuration:
+
+```plaintext
+# app.py
+from flask import Flask
+import time
+import logging
+from otel_config import configure_otel  # Import the configuration function
+
+app = Flask(__name__)
+
+# Configure OpenTelemetry
+app = configure_otel(app)
+
+@app.route('/')
+def hello_world():
+    logging.info("Handling request for /") #Log a simple message
+    time.sleep(0.1)  # Simulate some work
+    return 'Hello, World!'
+
+@app.route('/error')
+def error_route():
+    logging.error("Simulating an error") #Log an error message
+    raise ValueError("Simulated Error!")
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+**Key Changes:**
+
+- We import the `configure_otel` function from `otel_config.py`.
+- We call `configure_otel(app)` to instrument the Flask application.
+- We added `logging.info` and `logging.error` lines to demonstrate log capture.
+
+## Running Jaeger or Tempo with Docker (Optional)
+
+You can use Docker to easily run Jaeger or Tempo locally.
+
+**For Jaeger:**
+
+```bash
+docker run -d --name jaeger \
+  -p 16686:16686 \
+  -p 4317:4317 \
+  -p 4318:4318 \
+  jaegertracing/all-in-one:latest
+```
+
+Access the Jaeger UI at `http://localhost:16686`.
+
+**For Tempo:**
+
+First, create a `tempo.yaml` file with the following content:
+
+```yaml
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9096
+
+ingester:
+  max_ingestion_rate: 100000
+  max_ingestion_size_mb: 100
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo
+```
+
+Then, run Tempo with Docker:
+
+```bash
+docker run -d --name tempo -v $(pwd)/tempo.yaml:/etc/tempo.yaml -p 3200:3200 -p 4317:4317 -p 9096:9096 grafana/tempo:latest -config.file=/etc/tempo.yaml
+```
+
+Access the Tempo UI through Grafana (you'll need to configure Tempo as a data source in Grafana). You'll also need the [Tempo datasource plugin](https://grafana.com/grafana/plugins/grafana-tempo/).
+
+**Important:** Make sure Jaeger/Tempo are running _before_ starting your Flask application.
+
+## Running the Application and Viewing Telemetry Data
+
+1.  **Set the OTLP Endpoint (if necessary):** If you're not using the default endpoint (localhost:4317), set the `OTLP_ENDPOINT` environment variable. For example:
+
+    - **For Jaeger (if not default):** `export OTLP_ENDPOINT="http://localhost:4317"`
+    - **For Tempo (if not default):** `export OTLP_ENDPOINT="http://localhost:4317"`
+
+2.  **Run the Flask application:**
+
+    ```bash
+    python app.py
+    ```
+
+3.  **Access the application:** Open your browser and navigate to `http://localhost:5000/` and `http://localhost:5000/error`.
+
+4.  **View Telemetry Data:**
+
+    - **Jaeger:** Open the Jaeger UI (`http://localhost:16686`) and search for traces related to your Flask application (service name: `my-flask-app`). You should see traces for the `/` and `/error` routes. The `/error` route will also have an error tag.
+    - **Tempo:** Configure Tempo as a data source in Grafana. Then, use Grafana Explore to search for traces based on service name or other filters.
+
+## Understanding the Telemetry Data
+
+- **Traces:** Show the flow of requests through your application. Each request is represented as a trace, consisting of spans. A span represents a unit of work within the request (e.g., a function call, a database query, an HTTP request).
+- **Metrics:** Provide numerical measurements of your application's performance and resource usage. OpenTelemetry automatically collects metrics such as request duration and HTTP status codes.
+- **Logs:** Capture textual log messages generated by your application. OpenTelemetry associates logs with traces, providing valuable context for debugging. Error logs will be associated with traces that resulted in errors.
+
+## Customizing Telemetry Data
+
+You can add custom spans, attributes, and events to your telemetry data to provide more detailed insights.
+
+**Example: Adding a Custom Span and Attribute**
+
+```plaintext
+# app.py
+from flask import Flask
+import time
+import logging
+from otel_config import configure_otel
+from opentelemetry import trace
+
+app = Flask(__name__)
+app = configure_otel(app)
+tracer = trace.get_tracer(__name__) #Get the tracer
+
+@app.route('/')
+def hello_world():
+    logging.info("Handling request for /")
+    with tracer.start_as_current_span("processing_request"):  # Create a custom span
+        time.sleep(0.1)  # Simulate some work
+        span = trace.get_current_span() #Get the currently active span
+        span.set_attribute("user_id", "123") #Add an attribute to the span
+    return 'Hello, World!'
+
+@app.route('/error')
+def error_route():
+    logging.error("Simulating an error")
+    raise ValueError("Simulated Error!")
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+In this example, we create a custom span named "processing_request" and add an attribute "user_id" to it. This allows you to track the execution time of specific parts of your code and add metadata to your traces.
+
+## Conclusion
+
+OpenTelemetry provides a powerful and flexible framework for instrumenting your Flask applications and gaining comprehensive observability. By integrating with Jaeger or Tempo, you can visualize and analyze telemetry data to identify performance bottlenecks, debug errors, and improve the overall health of your systems. This guide covered tracing, metrics, and logging basics; further explore OpenTelemetry's capabilities to fully leverage its potential for your specific needs. Remember to set environment variables appropriately to switch between backends and consider using configuration files for more complex deployments.

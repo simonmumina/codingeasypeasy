@@ -1,0 +1,249 @@
+---
+title: 'Isolate Core Logic from Flask Dependencies: A Ports and Adapters Approach'
+date: '2024-02-29'
+lastmod: '2024-02-29'
+tags:
+  [
+    'flask',
+    'python',
+    'ports and adapters',
+    'clean architecture',
+    'dependency injection',
+    'testing',
+    'architecture',
+  ]
+draft: false
+summary: "Learn how to decouple your Flask application's core logic from framework-specific dependencies using the Ports and Adapters architecture (Hexagonal Architecture). Improve testability, maintainability, and flexibility of your Python web applications."
+authors: ['default']
+---
+
+# Isolate Core Logic from Flask Dependencies: A Ports and Adapters Approach
+
+Flask is a fantastic, lightweight framework for building web applications in Python. Its simplicity allows developers to get up and running quickly. However, tightly coupling your business logic directly to Flask can lead to several problems down the line:
+
+- **Reduced Testability:** Unit testing becomes difficult because your core logic is intertwined with Flask's request/response cycle and global application context.
+- **Difficult Maintainability:** Changes in Flask's API or dependencies can force you to modify core business logic, even if the underlying requirements haven't changed.
+- **Limited Reusability:** Your core logic becomes intrinsically tied to Flask, making it difficult to reuse in other contexts (e.g., a CLI application or a different web framework).
+- **Framework Lock-in:** Migrating to a different framework becomes a significant undertaking.
+
+To address these issues, we can leverage the **Ports and Adapters architecture** (also known as Hexagonal Architecture or Clean Architecture). This approach promotes loose coupling and separation of concerns, making your application more robust, testable, and adaptable.
+
+## Understanding Ports and Adapters
+
+The Ports and Adapters architecture centers around the following concepts:
+
+- **Core Logic (Application Core):** This is the heart of your application – the business rules and logic that define its behavior. It _should not_ depend on any external frameworks or technologies.
+- **Ports:** Ports are interfaces that define the boundaries of your core logic. They represent the operations that your core logic needs to perform (e.g., retrieving data from a database, sending an email) or that external systems need to interact with (e.g., receiving a web request). Ports are defined by the application core.
+- **Adapters:** Adapters are concrete implementations of the ports. They act as translators between the application core and the external world. Adapters depend on specific technologies (e.g., Flask, SQLAlchemy, Redis). There are two types of adapters:
+  - **Driving Adapters (Primary Adapters):** These initiate interactions with the application core. Examples include web controllers (Flask routes) or command-line interfaces.
+  - **Driven Adapters (Secondary Adapters):** These are called by the application core to perform tasks in the outside world. Examples include database repositories or email senders.
+
+In essence, your application core interacts with the outside world through ports, and adapters provide the specific implementations for those ports. This inversion of control is key to decoupling.
+
+## Implementing Ports and Adapters with Flask
+
+Let's illustrate how to apply the Ports and Adapters architecture to a simple Flask application that manages users.
+
+**1. Defining the Core Logic (Application Core)**
+
+First, we'll define the core logic without any Flask dependencies.
+
+```plaintext
+# core/user.py
+class User:
+    def __init__(self, id: int, name: str, email: str):
+        self.id = id
+        self.name = name
+        self.email = email
+
+# core/use_cases.py
+class UserUseCases:
+    def __init__(self, user_repository):
+        self.user_repository = user_repository
+
+    def get_user_by_id(self, user_id: int):
+        return self.user_repository.get_user(user_id)
+
+    def create_user(self, name: str, email: str):
+        # Perform validation here (e.g., email format, name length)
+        if not name or not email:
+            raise ValueError("Name and email are required.")
+
+        new_user = User(id=None, name=name, email=email)  # Let repository handle ID
+        return self.user_repository.create_user(new_user)
+
+# core/ports.py (Interfaces)
+from typing import Protocol, Optional
+
+class UserRepository(Protocol):
+    def get_user(self, user_id: int) -> Optional[User]:
+        def create_user(self, user: User) -> User: ...
+```
+
+Key points:
+
+- `User` is a simple data class representing a user.
+- `UserUseCases` encapsulates the business logic related to users. It depends on a `UserRepository`.
+- `UserRepository` is a _port_ (interface) defining the contract for interacting with a user data store. Crucially, the core logic _depends on an abstraction (the interface)_, not a concrete implementation. This is Dependency Inversion.
+- The `UserUseCases` class is instantiated with a `UserRepository` implementation. This is an example of dependency injection.
+
+**2. Implementing Adapters**
+
+Now, let's implement the adapters. We'll start with a database adapter using SQLAlchemy and a Flask adapter for handling HTTP requests.
+
+```plaintext
+# adapters/repository/sqlalchemy_user_repository.py
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from core.user import User
+from core.ports import UserRepository
+
+Base = declarative_base()
+
+class UserTable(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    email = Column(String)
+
+    def __repr__(self):
+        return f"<User(id={self.id}, name='{self.name}', email='{self.email}')>"
+
+
+class SQLAlchemyUserRepository(UserRepository):
+    def __init__(self, database_url: str):
+        self.engine = create_engine(database_url)
+        Base.metadata.create_all(self.engine)  # Create tables if they don't exist
+        self.Session = sessionmaker(bind=self.engine)
+
+    def get_user(self, user_id: int) -> Optional[User]:
+        with self.Session() as session:
+            user_table = session.query(UserTable).filter_by(id=user_id).first()
+            if user_table:
+                return User(id=user_table.id, name=user_table.name, email=user_table.email)
+            return None
+
+
+    def create_user(self, user: User) -> User:
+        with self.Session() as session:
+            user_table = UserTable(name=user.name, email=user.email)
+            session.add(user_table)
+            session.commit()
+            session.refresh(user_table)  # Get the newly assigned ID
+            return User(id=user_table.id, name=user_table.name, email=user_table.email)
+
+
+# adapters/web/flask_user_controller.py
+from flask import Flask, request, jsonify
+from core.use_cases import UserUseCases
+from adapters.repository.sqlalchemy_user_repository import SQLAlchemyUserRepository
+
+app = Flask(__name__)
+
+# Configure your database connection
+DATABASE_URL = 'sqlite:///./test.db'  # Use an environment variable in production!
+user_repository = SQLAlchemyUserRepository(DATABASE_URL)
+user_use_cases = UserUseCases(user_repository)
+
+
+@app.route('/users/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    user = user_use_cases.get_user_by_id(user_id)
+    if user:
+        return jsonify({'id': user.id, 'name': user.name, 'email': user.email})
+    else:
+        return jsonify({'message': 'User not found'}), 404
+
+
+@app.route('/users', methods=['POST'])
+def create_user():
+    data = request.get_json()
+    try:
+        user = user_use_cases.create_user(data['name'], data['email'])
+        return jsonify({'id': user.id, 'name': user.name, 'email': user.email}), 201
+    except ValueError as e:
+        return jsonify({'message': str(e)}), 400
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+Explanation:
+
+- `SQLAlchemyUserRepository` is a concrete implementation of the `UserRepository` port using SQLAlchemy to interact with a database. It transforms data between the `User` object and SQLAlchemy models. It _depends_ on SQLAlchemy.
+- `flask_user_controller.py` is a driving adapter. It handles HTTP requests, calls the `UserUseCases` to perform the business logic, and returns responses. It _depends_ on Flask.
+- The Flask application initializes the `SQLAlchemyUserRepository` and injects it into `UserUseCases`.
+
+**3. Benefits of this Architecture**
+
+- **Testability:** You can easily unit test the `UserUseCases` class by mocking the `UserRepository` interface. You don't need to spin up a database or a Flask application.
+
+  ```plaintext
+  # tests/test_user_use_cases.py
+  import unittest
+  from unittest.mock import Mock
+  from core.use_cases import UserUseCases
+  from core.user import User
+
+  class TestUserUseCases(unittest.TestCase):
+
+      def test_get_user_by_id(self):
+          # Mock the UserRepository
+          mock_user_repository = Mock()
+          mock_user_repository.get_user.return_value = User(id=1, name="Test User", email="test@example.com")
+
+          # Create the UserUseCases with the mock repository
+          user_use_cases = UserUseCases(mock_user_repository)
+
+          # Call the method under test
+          user = user_use_cases.get_user_by_id(1)
+
+          # Assert the results
+          self.assertEqual(user.name, "Test User")
+          mock_user_repository.get_user.assert_called_once_with(1)
+
+      def test_create_user(self):
+          # Mock the UserRepository
+          mock_user_repository = Mock()
+          mock_user_repository.create_user.return_value = User(id=2, name="New User", email="new@example.com")
+
+          # Create the UserUseCases with the mock repository
+          user_use_cases = UserUseCases(mock_user_repository)
+
+          # Call the method under test
+          user = user_use_cases.create_user("New User", "new@example.com")
+
+          # Assert the results
+          self.assertEqual(user.name, "New User")
+          mock_user_repository.create_user.assert_called_once()
+          created_user = mock_user_repository.create_user.call_args.args[0]
+          self.assertEqual(created_user.name, "New User")
+
+  if __name__ == '__main__':
+      unittest.main()
+  ```
+
+- **Maintainability:** If you need to switch to a different database (e.g., PostgreSQL), you only need to create a new adapter that implements the `UserRepository` interface. The core logic remains unchanged.
+- **Reusability:** You can reuse the core logic in other contexts (e.g., a command-line interface) by creating a new adapter that interacts with the `UserUseCases` class.
+- **Flexibility:** This architecture allows you to easily swap out different implementations of adapters. For instance, you could have a different email sending adapter for production versus development.
+
+**4. Dependency Injection Considerations**
+
+The example above uses a simple form of dependency injection (constructor injection). For larger applications, you might consider using a dependency injection container library like `injector` or `dependency_injector` to manage dependencies more effectively.
+
+**5. Scaling and Complexity**
+
+While Ports and Adapters offers significant benefits, it does introduce some complexity. For small, simple applications, it might be overkill. However, as your application grows and becomes more complex, the benefits of this architecture far outweigh the initial investment in setup and understanding. The clean separation of concerns and improved testability will pay dividends in the long run.
+
+**6. Further Improvements**
+
+- **Validation:** Implement robust validation in the `UserUseCases` class to ensure data integrity.
+- **Error Handling:** Define custom exceptions and handle errors gracefully in the adapters.
+- **Asynchronous Tasks:** Use asynchronous tasks (e.g., Celery) for long-running operations like sending emails.
+- **Configuration:** Use configuration management to manage different settings for different environments.
+
+**Conclusion**
+
+The Ports and Adapters architecture is a powerful tool for building robust, testable, and maintainable Flask applications. By decoupling your core logic from framework-specific dependencies, you can create a more flexible and adaptable system that is better equipped to handle future changes and challenges. While it requires an initial investment in understanding and implementation, the long-term benefits in terms of maintainability, testability, and scalability make it a worthwhile approach for complex applications. Embrace the hexagonal mindset!
