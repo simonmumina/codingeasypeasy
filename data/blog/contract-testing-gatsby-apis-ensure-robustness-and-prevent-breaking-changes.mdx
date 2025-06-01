@@ -1,0 +1,337 @@
+---
+title: 'Contract Testing Gatsby APIs: Ensure Robustness and Prevent Breaking Changes'
+date: '2024-02-29'
+lastmod: '2024-03-05'
+tags: ['gatsby', 'api', 'contract testing', 'testing', 'pact', 'javascript', 'react']
+draft: false
+summary: 'Learn how to implement contract testing for your Gatsby APIs using Pact.js. This guide walks you through setting up a consumer and provider, defining contracts, and verifying API behavior to ensure resilience and prevent breaking changes in your Gatsby applications.'
+authors: ['default']
+---
+
+# Contract Testing Gatsby APIs: Ensure Robustness and Prevent Breaking Changes
+
+Building robust and reliable APIs is crucial for any application, especially in a framework like Gatsby where performance and data integrity are paramount. One powerful technique for achieving this is **contract testing**. Contract testing ensures that the API provider (your Gatsby backend) and the API consumer (e.g., a React component in your Gatsby frontend) adhere to a pre-defined contract, preventing unexpected breaking changes and fostering smoother development workflows.
+
+This post will guide you through implementing contract testing for your Gatsby APIs using **Pact.js**, a popular and versatile contract testing framework.
+
+## What is Contract Testing and Why Should You Use It?
+
+Traditional end-to-end (E2E) testing can be slow and brittle. When a small change in one part of your system affects another, E2E tests often fail, requiring significant debugging and rework. Contract testing provides a more targeted approach.
+
+Instead of testing the entire system end-to-end, contract testing focuses on the **contract** between the provider (the API) and the consumer. The contract defines the expected requests and responses. The consumer tests the provider based on this contract, ensuring that the provider delivers the data in the expected format. The provider then verifies that it fulfills its side of the contract.
+
+Here's why contract testing is beneficial for Gatsby APIs:
+
+- **Early Detection of Breaking Changes:** Identify API changes that could break your frontend before deploying to production.
+- **Faster Development Cycles:** Reduce the need for extensive E2E testing. Contract tests are generally faster and more reliable.
+- **Increased Confidence in Deployments:** Ensure that your API and frontend work together seamlessly.
+- **Improved Collaboration:** Contracts serve as clear documentation for API behavior, facilitating better communication between frontend and backend developers.
+- **Refactoring Safety:** Refactor your Gatsby API with confidence, knowing that contract tests will alert you to any breaking changes.
+
+## Setting Up Your Gatsby Project
+
+Let's assume you have a Gatsby project already set up. If not, create a new one:
+
+```plaintext
+gatsby new my-gatsby-project
+cd my-gatsby-project
+```
+
+We'll need to install the necessary dependencies for Pact.js:
+
+```plaintext
+npm install @pact-foundation/pact --save-dev
+npm install @pact-foundation/pact-node --save-dev
+npm install node-fetch --save-dev # For making API requests in tests
+```
+
+- `@pact-foundation/pact`: The core Pact.js library.
+- `@pact-foundation/pact-node`: Provides tools for starting and stopping the Pact mock service.
+- `node-fetch`: A widely used library for making HTTP requests. You might already have a preferred alternative like `axios`.
+
+## Example Gatsby API Endpoint
+
+Let's create a simple Gatsby API endpoint that returns a list of users. Create a file named `src/api/users.js`:
+
+```plaintext
+// src/api/users.js
+export default async function handler(req, res) {
+  if (req.method === 'GET') {
+    const users = [
+      { id: 1, name: 'John Doe' },
+      { id: 2, name: 'Jane Smith' },
+    ]
+    res.status(200).json(users)
+  } else {
+    res.status(405).json({ message: 'Method Not Allowed' })
+  }
+}
+```
+
+This endpoint responds to `GET` requests with a JSON array of users.
+
+## Defining the Consumer (Frontend) Test
+
+Now, let's write the contract test from the perspective of the consumer (our Gatsby frontend). We'll create a file named `tests/consumer.test.js`:
+
+```plaintext
+// tests/consumer.test.js
+const { Pact, Matchers } = require('@pact-foundation/pact')
+const { like, eachLike } = Matchers
+const path = require('path')
+const fetch = require('node-fetch')
+const { Verifier } = require('@pact-foundation/pact')
+
+const pact = new Pact({
+  consumer: 'GatsbyFrontend',
+  provider: 'GatsbyAPI',
+  port: 1234, // Choose a free port
+  log: path.resolve(process.cwd(), 'logs', 'pact.log'),
+  dir: path.resolve(process.cwd(), 'pacts'),
+  specVersion: 2,
+})
+
+describe('Gatsby Frontend Contract with Gatsby API', () => {
+  beforeAll(() => pact.setup())
+  afterEach(() => pact.verify())
+  afterAll(() => pact.finalize())
+
+  it('successfully retrieves a list of users', async () => {
+    // Define the expected interaction
+    pact.addInteraction({
+      state: 'there are users', // Optional: Define a provider state if needed
+      uponReceiving: 'a request for users',
+      withRequest: {
+        method: 'GET',
+        path: '/api/users',
+      },
+      willRespondWith: {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: eachLike({
+          id: like(1),
+          name: like('John Doe'),
+        }),
+      },
+    })
+
+    // Make the actual API request (using the mock provider)
+    const response = await fetch('http://localhost:1234/api/users')
+    const users = await response.json()
+
+    // Assert that the response matches the expected data structure
+    expect(users).toEqual([
+      { id: 1, name: 'John Doe' },
+      { id: 2, name: 'Jane Smith' },
+    ])
+  })
+
+  //  Add more test cases for different scenarios (e.g., error handling, different data)
+})
+
+// Test Verification step
+describe('Pact Verification', () => {
+  it('should validate the expectations of the Consumer', () => {
+    const opts = {
+      provider: 'GatsbyAPI',
+      providerBaseUrl: 'http://localhost:8000', // Replace with your Gatsby API's actual URL
+      pactUrls: [path.resolve(process.cwd(), 'pacts/gatsbyfrontend-gatsbyapi.json')], //generated pact file path
+
+      // Example of verifying the pact with a specific state - useful for data setup
+      stateHandlers: {
+        'there are users': () => {
+          // You could set up mock data here if necessary.
+          // For this simple example, we don't need to do anything.
+          console.log('Setting up provider state: there are users')
+          return Promise.resolve()
+        },
+      },
+
+      //   // Uncomment to specify the verification options
+      //   // see https://github.com/pact-foundation/pact-js/tree/feat/v3/packages/verifier#configuration
+      requestFilter: (req, res, next) => {
+        next()
+      },
+    }
+
+    return new Verifier(opts).verifyProvider().then(() => {
+      console.log('Pact Verification Complete!')
+    })
+  })
+})
+```
+
+**Explanation:**
+
+1.  **Import necessary modules:** Import the Pact.js library and `node-fetch`.
+2.  **Create a Pact instance:** Configure the Pact instance with the consumer and provider names, the port for the mock service, and the locations for logs and pact files.
+3.  **Define the test suite:** Use `describe` to organize the tests.
+4.  **Setup, Verify, and Finalize:** The `beforeAll`, `afterEach`, and `afterAll` hooks manage the Pact mock service. `pact.setup()` starts the mock service, `pact.verify()` verifies that the interactions were executed correctly, and `pact.finalize()` shuts down the service.
+5.  **Add an interaction:** `pact.addInteraction()` defines the expected request and response. This is the heart of the contract.
+    - `state`: An optional state that the provider needs to be in before the interaction can occur. This is useful for setting up test data.
+    - `uponReceiving`: A description of the request.
+    - `withRequest`: Defines the HTTP method and path.
+    - `willRespondWith`: Defines the expected response, including the status code, headers, and body. We use `Matchers` like `like` and `eachLike` to define the _shape_ of the data, rather than the exact values. This makes the contract more flexible. `like(value)` matches a value of the same type as `value`. `eachLike(value)` matches an array where each element has the same type as `value`.
+6.  **Make the API request:** Use `fetch` to make a request to the mock provider (running on `http://localhost:1234`).
+7.  **Assert the response:** Assert that the response from the mock provider matches the expected data structure. It's generally best to assert on the data _structure_ and _types_ rather than specific values, as this makes the test more resilient to changes in the data.
+8.  **Verification Step**: This section handles the Provider verification to confirm that the provider actually implements the contract.
+
+## Running the Consumer Test
+
+To run the consumer test, add a script to your `package.json`:
+
+```plaintext
+{
+  "scripts": {
+    "test:consumer": "jest tests/consumer.test.js"
+  }
+}
+```
+
+Then, run:
+
+```plaintext
+npm run test:consumer
+```
+
+This will start the Pact mock service, run the test, and generate a Pact file (e.g., `pacts/GatsbyFrontend-GatsbyAPI.json`). This file contains the contract defined by the consumer.
+
+## Implementing the Provider (API) Verification
+
+Now, we need to verify that our Gatsby API actually fulfills the contract defined in the Pact file. Create a file named `tests/provider.test.js`:
+
+```plaintext
+// tests/provider.test.js
+const { Verifier } = require('@pact-foundation/pact')
+const path = require('path')
+
+describe('Pact Verification', () => {
+  it('should validate the expectations of the Consumer', () => {
+    const opts = {
+      provider: 'GatsbyAPI',
+      providerBaseUrl: 'http://localhost:8000', // Replace with your Gatsby API's actual URL
+      pactUrls: [path.resolve(process.cwd(), 'pacts/gatsbyfrontend-gatsbyapi.json')], //generated pact file path
+
+      // Example of verifying the pact with a specific state - useful for data setup
+      stateHandlers: {
+        'there are users': () => {
+          // You could set up mock data here if necessary.
+          // For this simple example, we don't need to do anything.
+          console.log('Setting up provider state: there are users')
+          return Promise.resolve()
+        },
+      },
+
+      //   // Uncomment to specify the verification options
+      //   // see https://github.com/pact-foundation/pact-js/tree/feat/v3/packages/verifier#configuration
+      requestFilter: (req, res, next) => {
+        next()
+      },
+    }
+
+    return new Verifier(opts).verifyProvider().then(() => {
+      console.log('Pact Verification Complete!')
+    })
+  })
+})
+```
+
+**Explanation:**
+
+1.  **Import the Verifier:** Import the `Verifier` class from `@pact-foundation/pact`.
+2.  **Configure the Verifier:**
+    - `provider`: The name of the provider.
+    - `providerBaseUrl`: The **actual URL** of your Gatsby API (running locally in development mode). **Important:** Make sure your Gatsby development server is running (`gatsby develop`) before running the provider verification.
+    - `pactUrls`: An array of paths to the Pact files generated by the consumer tests.
+    - `stateHandlers`: A map of state names to functions that set up the provider in the correct state before each interaction is verified. In our example, the consumer test has a `state` of "there are users." This `stateHandler` simply logs a message, but in a more complex scenario, you might use it to seed your database with test data.
+    - `requestFilter`: An optional function that allows you to modify the request before it is sent to the provider. This is useful for adding authentication headers, for example.
+3.  **Verify the Provider:** Create a new `Verifier` instance and call the `verifyProvider()` method. This will run the verification process.
+
+**Important:** Make sure your Gatsby development server is running (`gatsby develop`) before running the provider verification. The `providerBaseUrl` should point to the running server (typically `http://localhost:8000`).
+
+## Running the Provider Verification
+
+Add another script to your `package.json`:
+
+```plaintext
+{
+  "scripts": {
+    "test:consumer": "jest tests/consumer.test.js",
+    "test:provider": "jest tests/provider.test.js"
+  }
+}
+```
+
+Then, run:
+
+```plaintext
+npm run test:provider
+```
+
+This will start the provider verification process. The `Verifier` will read the Pact file, send requests to your Gatsby API based on the interactions defined in the contract, and verify that the responses match the expectations.
+
+If the verification is successful, you'll see a "Pact Verification Complete!" message. If it fails, the `Verifier` will provide detailed error messages, indicating which interactions failed and why.
+
+## Provider States: Handling Complex Scenarios
+
+Provider states are crucial for handling more complex scenarios where the API's response depends on the state of the data. For example, you might want to test the scenario where there are no users, or where a specific user exists.
+
+To use provider states:
+
+1.  **Define the state in the consumer test:**
+
+    ```plaintext
+    pact.addInteraction({
+      state: 'there are no users',
+      uponReceiving: 'a request for users',
+      withRequest: {
+        method: 'GET',
+        path: '/api/users',
+      },
+      willRespondWith: {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: [], // Expect an empty array
+      },
+    })
+    ```
+
+2.  **Implement the state handler in the provider test:**
+
+    ```plaintext
+    stateHandlers: {
+      'there are users': () => {
+        //  Ensure the database has users (if applicable)
+        console.log('Setting up provider state: there are users');
+        return Promise.resolve();
+      },
+      'there are no users': () => {
+        // Ensure the database is empty (if applicable)
+        console.log('Setting up provider state: there are no users');
+        return Promise.resolve();
+      },
+    },
+    ```
+
+Inside the state handler, you would typically perform the necessary actions to set up the provider in the required state. This might involve clearing a database, seeding it with specific data, or mocking external services.
+
+## Continuous Integration
+
+To fully leverage the benefits of contract testing, integrate it into your continuous integration (CI) pipeline. This will automatically run the consumer and provider tests whenever changes are made to the API or frontend, ensuring that the contract is always upheld. Popular CI platforms like GitHub Actions, CircleCI, and Travis CI are well-suited for this purpose.
+
+## Best Practices
+
+- **Keep contracts focused:** Define contracts for specific interactions rather than trying to cover all possible scenarios in a single contract.
+- **Use matchers:** Use Pact's matchers to define the _shape_ of the data, rather than the exact values. This makes the contracts more flexible and resilient to changes.
+- **Version your contracts:** Use version control to track changes to your contracts.
+- **Publish your contracts:** Consider publishing your contracts to a Pact Broker. This allows consumers and providers to easily share and manage contracts.
+- **Test in isolation:** Ensure that your provider verification tests run in a clean environment, without dependencies on external services.
+- **Automate everything:** Integrate contract testing into your CI/CD pipeline for continuous feedback.
+
+## Conclusion
+
+Contract testing is a valuable tool for building robust and reliable Gatsby APIs. By defining contracts between the provider and consumer, you can detect breaking changes early, improve collaboration, and increase confidence in your deployments. Pact.js provides a powerful and flexible framework for implementing contract testing in your Gatsby projects. By following the steps outlined in this guide, you can start reaping the benefits of contract testing today. Remember to start small, focus on critical interactions, and gradually expand your contract coverage as your application evolves.

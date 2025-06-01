@@ -1,0 +1,326 @@
+---
+title: 'Boost Gatsby Performance with Persisted GraphQL Queries: A Comprehensive Guide'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags:
+  [
+    'gatsby',
+    'graphql',
+    'performance',
+    'persisted queries',
+    'javascript',
+    'optimization',
+    'front-end development',
+  ]
+draft: false
+summary: 'Learn how to implement persisted GraphQL queries in your Gatsby site to significantly improve performance, reduce bundle size, and enhance security. This comprehensive guide covers everything from setup to advanced usage, with practical code examples.'
+authors: ['default']
+---
+
+# Boost Gatsby Performance with Persisted GraphQL Queries: A Comprehensive Guide
+
+Gatsby, a popular React-based static site generator, leverages GraphQL to fetch and transform data. While this approach is powerful, it can sometimes lead to performance bottlenecks, especially in large-scale projects. One effective solution to address this is implementing **persisted GraphQL queries**.
+
+This comprehensive guide will walk you through the process of implementing persisted GraphQL queries in your Gatsby site. We'll cover the benefits, the setup, and practical examples to help you optimize your site's performance, reduce bundle size, and enhance security.
+
+## What are Persisted GraphQL Queries?
+
+In a standard Gatsby setup, GraphQL queries are embedded within your React components. When your site is built, these queries are sent to the GraphQL server. However, this means:
+
+- **Larger Bundle Size:** The queries themselves are included in your JavaScript bundles, increasing the download size.
+- **Network Overhead:** Each time a component needs data, the complete GraphQL query is sent over the network.
+- **Security Risks:** Embedded queries can potentially be exposed in the browser, raising security concerns.
+
+Persisted queries offer a solution by:
+
+- **Pre-Registering Queries:** Instead of sending the query string, you send a unique identifier (hash) that maps to a predefined query on the server.
+- **Separating Queries from Code:** Queries are stored separately, often on the server-side, reducing the client-side bundle size.
+- **Improved Performance:** Sending a smaller hash is faster than sending the entire query string.
+- **Enhanced Security:** Queries are not exposed client-side, mitigating potential vulnerabilities.
+
+## Benefits of Using Persisted Queries in Gatsby
+
+Implementing persisted queries in your Gatsby site offers a multitude of benefits:
+
+- **Improved Performance:** Reduce network overhead and speed up data fetching. Smaller requests translate to faster page load times.
+- **Reduced Bundle Size:** Remove GraphQL queries from your JavaScript bundles, leading to a lighter codebase and faster initial load.
+- **Enhanced Security:** Protect your GraphQL queries from being exposed client-side.
+- **Centralized Query Management:** Manage your GraphQL queries in a single location, making them easier to maintain and update.
+- **Simplified Client-Side Code:** Replace complex query strings with simple identifiers, making your code cleaner and more readable.
+- **Potential for Caching:** Leverage caching mechanisms on the server to further optimize query execution.
+
+## Implementing Persisted Queries in Gatsby: A Step-by-Step Guide
+
+Let's dive into how to implement persisted queries in your Gatsby project. We'll use the `gatsby-plugin-apollo` plugin as our primary tool.
+
+**1. Install Required Packages:**
+
+First, install the necessary packages:
+
+```plaintext
+npm install gatsby-plugin-apollo @apollo/client graphql
+```
+
+or
+
+```plaintext
+yarn add gatsby-plugin-apollo @apollo/client graphql
+```
+
+**2. Configure `gatsby-config.js`:**
+
+Add `gatsby-plugin-apollo` to your `gatsby-config.js` file:
+
+```plaintext
+// gatsby-config.js
+module.exports = {
+  plugins: [
+    {
+      resolve: `gatsby-plugin-apollo`,
+      options: {
+        uri: `http://localhost:4000/graphql`, // Replace with your GraphQL API endpoint
+        persistQueries: true, // Enable persisted queries
+      },
+    },
+  ],
+}
+```
+
+- `uri`: This is your GraphQL API endpoint. Make sure this points to your GraphQL server.
+- `persistQueries`: Setting this to `true` enables persisted queries. By default, this will use `window.GATSBY_APOLLO_PERSIST_QUERIES` to determine the location of your query manifest. If not defined there, it will use `__GATSBY_PERSISTED_QUERIES__` on the `window` object.
+
+**3. Create a GraphQL Server with Persisted Query Support (Example with Apollo Server):**
+
+You'll need a GraphQL server that supports persisted queries. Here's a basic example using Apollo Server:
+
+```plaintext
+// server.js
+const { ApolloServer, gql } = require('apollo-server')
+const fs = require('fs')
+
+const typeDefs = gql`
+  type Query {
+    hello: String
+    posts: [Post]
+  }
+
+  type Post {
+    id: ID!
+    title: String!
+    content: String
+  }
+`
+
+const posts = [
+  { id: '1', title: 'First Post', content: 'This is the first post.' },
+  { id: '2', title: 'Second Post', content: 'This is the second post.' },
+]
+
+const resolvers = {
+  Query: {
+    hello: () => 'Hello world!',
+    posts: () => posts,
+  },
+}
+
+const persistedQueries = {} // Store persisted queries
+
+const server = new ApolloServer({
+  typeDefs,
+  resolvers,
+  persistedQueries,
+  formatError: (error) => {
+    console.log(error)
+    return error
+  },
+  cache: 'bounded', // Important for persisted queries to work properly.  Requires Apollo Server v3.7+
+  plugins: [
+    {
+      requestDidStart(requestContext) {
+        return {
+          async didResolveOperation({ request, document, operationName }) {
+            const persistedQueryKey = request.extensions?.persistedQuery?.sha256Hash
+
+            if (persistedQueryKey) {
+              // Check if the query is already persisted
+              if (!persistedQueries[persistedQueryKey]) {
+                console.log(`Persisting query for key: ${persistedQueryKey}`)
+                persistedQueries[persistedQueryKey] = document // Save the actual query
+              } else {
+                // Query already persisted, no need to save again.
+                console.log(`Query already persisted for key: ${persistedQueryKey}`)
+              }
+              //Important to do this before the request is made.
+              request.query = undefined // Clear the query string
+              request.extensions.persistedQuery.hit = true
+            } else {
+              console.log('Not a persisted query')
+            }
+          },
+          async didEncounterErrors({ request, errors }) {
+            const persistedQueryKey = request.extensions?.persistedQuery?.sha256Hash
+            if (errors.some((error) => error.message === 'PersistedQueryNotFound')) {
+              console.warn(
+                `Persisted query not found for hash: ${persistedQueryKey}. Please ensure the hash and query are registered on the server.`
+              )
+            }
+          },
+        }
+      },
+    },
+  ],
+})
+
+server.listen(4000).then(({ url }) => {
+  console.log(`Server ready at ${url}`)
+})
+```
+
+Key points in the server setup:
+
+- **`persistedQueries` Object:** This object stores the persisted queries, mapping the SHA-256 hash to the actual GraphQL query document. In a real-world application, you'd likely use a database for persistence.
+- **`requestDidStart` Plugin:** This Apollo Server plugin intercepts requests and handles the logic for persisted queries.
+
+  - **`didResolveOperation` Method:** This method is invoked after Apollo Server has processed the incoming GraphQL operation, including the query or mutation.
+    - It checks for the presence of the `persistedQuery` extension in the request, which is injected by Apollo Client when using persisted queries.
+    - If a `persistedQueryKey` (the SHA-256 hash of the query) is found, it checks if the corresponding query is already persisted in the `persistedQueries` object.
+    - If the query is not persisted, it logs a message indicating that the query is being persisted and saves the query document in the `persistedQueries` object, associating it with the `persistedQueryKey`.
+    - If the query is already persisted, it logs a message indicating that the query has already been persisted.
+    - It sets `request.query` to `undefined` to prevent the client from sending the full query string to the server in future requests, relying instead on the `persistedQueryKey`.
+    - It sets `request.extensions.persistedQuery.hit` to `true` to indicate that the persisted query was successfully found and used.
+  - **`didEncounterErrors` Method:** This method is called if any errors are encountered during the execution of the GraphQL operation.
+    - It checks for specific errors related to persisted queries, such as "PersistedQueryNotFound".
+    - If a "PersistedQueryNotFound" error is encountered, it logs a warning message indicating that the query hash was not found on the server, along with the corresponding `persistedQueryKey`. This message encourages the developer to ensure that the hash and query are registered on the server.
+
+- **`cache: 'bounded'`**: Setting the cache to 'bounded' is **crucial** for Apollo Server version 3.7 and above to function correctly with persisted queries. This prevents the server from crashing.
+
+**4. Create a Component with a GraphQL Query (e.g., `src/components/Posts.js`):**
+
+```plaintext
+// src/components/Posts.js
+import React from 'react'
+import { useQuery, gql } from '@apollo/client'
+
+const GET_POSTS = gql`
+  query GetPosts {
+    posts {
+      id
+      title
+      content
+    }
+  }
+`
+
+const Posts = () => {
+  const { loading, error, data } = useQuery(GET_POSTS)
+
+  if (loading) return <p>Loading...</p>
+  if (error) return <p>Error: {error.message}</p>
+
+  return (
+    <div>
+      <h2>Posts</h2>
+      {data.posts.map((post) => (
+        <div key={post.id}>
+          <h3>{post.title}</h3>
+          <p>{post.content}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export default Posts
+```
+
+**5. Use the Component in a Page (e.g., `src/pages/index.js`):**
+
+```plaintext
+// src/pages/index.js
+import React from 'react'
+import Posts from '../components/Posts'
+
+const IndexPage = () => {
+  return (
+    <div>
+      <h1>My Gatsby Blog</h1>
+      <Posts />
+    </div>
+  )
+}
+
+export default IndexPage
+```
+
+**6. Build Your Gatsby Site:**
+
+Run `gatsby build`. This will generate the persisted query manifest in your `public` directory. By default it should be under `/public/persisted-queries.json`.
+
+**7. Serve the Persisted Query Manifest to the Client:**
+
+The client needs access to the persisted query manifest (`persisted-queries.json`). You have several options:
+
+- **Public Folder:** Since the manifest is already in the `public` folder, Gatsby will automatically serve it. Make sure your `gatsby-config.js` has `persistQueries: true` setup correctly.
+- **Server-Side Route (If you have a dynamic server):** You can create a server-side route that serves the JSON file.
+
+**8. (Optional) Check the Network Requests:**
+
+Inspect your browser's network requests after building and running your Gatsby site. You should see that the GraphQL requests are now sending the `extensions` object containing the `persistedQuery` with the `sha256Hash` instead of the entire query string.
+
+## Advanced Usage and Considerations
+
+- **Server-Side Query Registration:** Instead of relying on the client to send the complete query for the first time, you can pre-register all queries on the server during deployment. This ensures that all queries are available from the start.
+- **Using a Database for Persisted Queries:** For larger applications, store persisted queries in a database (e.g., MongoDB, PostgreSQL) for better scalability and management.
+- **Error Handling:** Implement robust error handling on both the client and server to handle cases where a persisted query is not found.
+- **Version Control:** Treat your persisted query manifest as code and include it in your version control system (e.g., Git).
+- **Customization:** `gatsby-plugin-apollo` provides options for customizing the path to the persisted query manifest and other settings. Refer to the plugin documentation for details.
+- **Apollo Client Configuration:** Ensure your Apollo Client is configured to use the `useGETForQueries: true` option. This will encode the query hash in the URL, which is necessary for the server to identify the persisted query correctly when using a GET request. You can do so by configuring a custom Apollo client and passing it to the Gatsby plugin:
+
+```plaintext
+// gatsby-config.js
+const { ApolloClient, InMemoryCache, HttpLink } = require('@apollo/client')
+
+const client = new ApolloClient({
+  cache: new InMemoryCache(),
+  link: new HttpLink({
+    uri: 'http://localhost:4000/graphql',
+  }),
+  defaultOptions: {
+    query: {
+      fetchPolicy: 'cache-first',
+      errorPolicy: 'all',
+    },
+    mutate: {
+      errorPolicy: 'all',
+    },
+  },
+  useGETForQueries: true, // Required for persisted queries with GET requests
+})
+
+module.exports = {
+  plugins: [
+    {
+      resolve: `gatsby-plugin-apollo`,
+      options: {
+        apolloClient: {
+          existing: client,
+        },
+        persistQueries: true,
+      },
+    },
+  ],
+}
+```
+
+- **Alternative Plugins**: While this guide focuses on `gatsby-plugin-apollo`, other Gatsby plugins support persisted queries. Explore options like `gatsby-plugin-purge-graphql` which can help with unused query removal as well as query hashing. The choice depends on your specific needs and project setup.
+
+## Troubleshooting
+
+- **"PersistedQueryNotFound" Error:** This error indicates that the query hash sent by the client is not found on the server. Double-check that the query is correctly registered on the server and that the persisted query manifest is being served to the client. Also ensure your Apollo client is configured with `useGETForQueries: true` if you are using GET requests for queries.
+- **Network Requests Still Sending Full Queries:** Verify that `persistQueries` is set to `true` in your `gatsby-config.js` and that your GraphQL server is properly configured to handle persisted queries. Inspect the network requests to ensure that the `extensions` object is being included. Clear your browser cache and try again.
+- **Manifest Not Found:** Ensure that the `persisted-queries.json` file is correctly generated in the `public` directory and that it is accessible to the client. Double-check the file path configuration in `gatsby-config.js` if you're using a custom path.
+- **CORS Issues**: Ensure your GraphQL server has CORS (Cross-Origin Resource Sharing) configured correctly to allow requests from your Gatsby development server and production domain. In development, you might need to allow all origins for testing.
+
+## Conclusion
+
+Implementing persisted GraphQL queries in your Gatsby site can significantly improve performance, reduce bundle size, and enhance security. By pre-registering queries and sending only unique identifiers over the network, you can optimize your data fetching process and create a faster, more efficient website. This guide has provided a comprehensive overview of the implementation process, from setup to advanced usage, with practical code examples to help you get started. Remember to thoroughly test and monitor your implementation to ensure optimal performance and error handling. Good luck!

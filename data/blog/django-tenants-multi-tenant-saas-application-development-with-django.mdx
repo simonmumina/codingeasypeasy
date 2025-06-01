@@ -1,0 +1,421 @@
+---
+title: 'Django Tenants: Multi-Tenant SaaS Application Development with Django'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags:
+  [
+    'django',
+    'saas',
+    'multi-tenancy',
+    'django-tenants',
+    'database design',
+    'postgresql',
+    'schema per tenant',
+  ]
+draft: false
+summary: 'Learn how to build scalable and efficient multi-tenant SaaS applications using Django and django-tenants. Explore schema-based tenancy, database configurations, and code examples for implementation.'
+authors: ['default']
+---
+
+# Django Tenants: Multi-Tenant SaaS Application Development with Django
+
+Building a Software-as-a-Service (SaaS) application requires careful consideration of architecture, especially when it comes to managing multiple tenants (customers) within a single application. One of the most effective ways to achieve this in Django is by utilizing a multi-tenant architecture. This blog post will guide you through building a multi-tenant SaaS application using `django-tenants`, a powerful Django package that simplifies schema-based tenancy.
+
+## What is Multi-Tenancy?
+
+Multi-tenancy is an architectural pattern where a single instance of a software application serves multiple customers (tenants). This differs from single-tenancy, where each customer has their own dedicated instance of the application.
+
+**Benefits of Multi-Tenancy:**
+
+- **Cost Efficiency:** Sharing resources across multiple tenants reduces infrastructure costs.
+- **Simplified Maintenance:** Updates and maintenance are performed on a single application instance.
+- **Scalability:** Easier to scale the application to accommodate new tenants.
+- **Centralized Management:** Easier to manage and monitor all tenants from a single point.
+
+## Schema-Based Tenancy with `django-tenants`
+
+`django-tenants` implements multi-tenancy using a schema-based approach. Each tenant gets its own schema within a PostgreSQL database. This offers excellent data isolation and scalability. Key components include:
+
+- **Shared App:** Contains the core application logic that is shared across all tenants.
+- **Tenant App:** Contains code specific to tenants, such as settings, models, and migrations.
+- **Public App:** Handles the public-facing aspects of the application, such as sign-up and login.
+
+## Prerequisites
+
+- **Python:** 3.8 or higher
+- **Django:** 4.0 or higher
+- **PostgreSQL:** Essential for schema-based tenancy. Ensure PostgreSQL is installed and running.
+- **Virtual Environment (Recommended):** Use a virtual environment to manage dependencies.
+
+## Setting up the Project
+
+1.  **Create a Django Project:**
+
+    ```plaintext
+    python -m venv venv
+    source venv/bin/activate  # On Linux/macOS
+    # venv\Scripts\activate  # On Windows
+
+    pip install django
+    django-admin startproject saas_project .
+    cd saas_project
+    ```
+
+2.  **Install `django-tenants` and other dependencies:**
+
+    ```plaintext
+    pip install django-tenants psycopg2-binary
+    ```
+
+    **Note:** `psycopg2-binary` is a precompiled binary for PostgreSQL adapter. If you encounter issues, you might need the full `psycopg2` and ensure you have the necessary PostgreSQL development libraries installed on your system.
+
+3.  **Configure `settings.py`:**
+
+    ```plaintext
+    # settings.py
+
+    ALLOWED_HOSTS = ['*'] # Adjust for production!
+
+    MIDDLEWARE = [
+        'django_tenants.middleware.main.TenantMainMiddleware', # Tenant Middleware
+        'django.middleware.security.SecurityMiddleware',
+        'django.contrib.sessions.middleware.SessionMiddleware',
+        'django.middleware.common.CommonMiddleware',
+        'django.middleware.csrf.CsrfViewMiddleware',
+        'django.contrib.auth.middleware.AuthenticationMiddleware',
+        'django.contrib.messages.middleware.MessageMiddleware',
+        'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    ]
+
+    ROOT_URLCONF = 'saas_project.urls'
+
+    TEMPLATES = [
+        {
+            'BACKEND': 'django.template.backends.django.DjangoTemplates',
+            'DIRS': [],
+            'APP_DIRS': True,
+            'OPTIONS': {
+                'context_processors': [
+                    'django.template.context_processors.debug',
+                    'django.template.context_processors.request', # Needed for tenant context
+                    'django.contrib.auth.context_processors.auth',
+                    'django.contrib.messages.context_processors.messages',
+                ],
+            },
+        },
+    ]
+
+
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django_tenants.postgresql_backend.TenantAwarePostgreSQL', #Tenant Aware PostgreSQL
+            'NAME': 'saas_db', # Replace with your database name
+            'USER': 'your_username', # Replace with your PostgreSQL username
+            'PASSWORD': 'your_password', # Replace with your PostgreSQL password
+            'HOST': '127.0.0.1',
+            'PORT': '5432',
+        }
+    }
+
+
+    TENANT_MODEL = "tenants.Client" # Our Tenant model
+    TENANT_DOMAIN_MODEL = "tenants.Domain"  # Our Domain model
+
+    SHARED_APPS = (
+        'django_tenants',  # mandatory, should always be before any django app
+        'tenants', # include it here, so you can access the models
+        'django.contrib.contenttypes',
+        'django.contrib.auth',
+        'django.contrib.sessions',
+        'django.contrib.messages',
+        'django.contrib.staticfiles',
+    )
+
+    TENANT_APPS = (
+        'django.contrib.admin', # For tenant admin (optional)
+        'django.contrib.contenttypes',
+        'django.contrib.auth',
+        'django.contrib.sessions',
+        'django.contrib.messages',
+        'django.contrib.staticfiles',
+
+        # Your tenant-specific apps go here
+        'core',  # Example tenant app
+    )
+
+    INSTALLED_APPS = SHARED_APPS + TENANT_APPS
+
+    STATIC_URL = '/static/'
+
+    PUBLIC_SCHEMA_NAME = 'public'
+    ```
+
+    **Important Notes:**
+
+    - Replace `saas_db`, `your_username`, and `your_password` with your PostgreSQL database credentials.
+    - `ALLOWED_HOSTS`: For production, restrict this to your specific domains.
+    - `TENANT_APPS`: These apps will be installed in each tenant's schema. Include `django.contrib.admin` if you want tenant-specific admin interfaces.
+    - `SHARED_APPS`: These apps are installed only in the public schema. Typically, authentication, content types, sessions, and static files are shared. **Crucially, `tenants` app MUST be in `SHARED_APPS`**.
+    - `PUBLIC_SCHEMA_NAME = 'public'`: This defines the schema name for the public tenant, holding global application data.
+
+4.  **Create `tenants` app:**
+
+    ```plaintext
+    python manage.py startapp tenants
+    ```
+
+5.  **Define `Client` and `Domain` models in `tenants/models.py`:**
+
+    ```plaintext
+    # tenants/models.py
+
+    from django.db import models
+    from django_tenants.models import TenantMixin, DomainMixin
+
+
+    class Client(TenantMixin):
+        name = models.CharField(max_length=100)
+        paid_until = models.DateField(null=True, blank=True)
+        on_trial = models.BooleanField(default=True)
+
+        # default true, schema will be automatically created and synced when saving.
+        auto_create_schema = True
+
+        def __str__(self):
+            return self.name
+
+
+    class Domain(DomainMixin):
+        def __str__(self):
+            return self.domain
+    ```
+
+6.  **Create migrations for the `tenants` app:**
+
+    ```plaintext
+    python manage.py makemigrations tenants
+    python manage.py migrate_schemas --shared
+    ```
+
+    - `makemigrations` creates the migration files.
+    - `migrate_schemas --shared` applies the migrations to the shared (public) schema. This is essential!
+
+7.  **Create a Tenant-Specific App (e.g., `core`):**
+
+    ```plaintext
+    python manage.py startapp core
+    ```
+
+    Let's add a simple model to `core/models.py`:
+
+    ```plaintext
+    # core/models.py
+
+    from django.db import models
+
+    class Product(models.Model):
+        name = models.CharField(max_length=255)
+        description = models.TextField()
+        price = models.DecimalField(max_digits=10, decimal_places=2)
+
+        def __str__(self):
+            return self.name
+    ```
+
+    And create migrations for the `core` app:
+
+    ```plaintext
+    python manage.py makemigrations core
+    python manage.py migrate_schemas --tenant
+    ```
+
+    - `migrate_schemas --tenant` applies migrations to all existing tenant schemas. This needs to be run after creating a new tenant-specific app OR after making changes to the tenant-specific models.
+
+## Working with Tenants
+
+1.  **Creating a Tenant:**
+
+    You can create tenants directly in the Django shell or through an admin interface (if you include `django.contrib.admin` in `TENANT_APPS`).
+
+    ```plaintext
+    from tenants.models import Client, Domain
+
+    # Create a new tenant
+    tenant = Client(name='Acme Corp')
+    tenant.save()
+
+    # Create a domain for the tenant
+    domain = Domain(domain='acme.localhost:8000', tenant=tenant)
+    domain.is_primary = True # Make it the primary domain
+    domain.save()
+    ```
+
+    **Important:** Replace `acme.localhost:8000` with your desired domain. For local development, you might need to configure your `/etc/hosts` (or equivalent on Windows) to point the domain to `127.0.0.1`.
+
+2.  **Accessing Tenant-Specific Data:**
+
+    The `TenantMainMiddleware` handles automatically switching the database connection to the correct schema based on the request's domain. Within your views, models, etc., you can access data as usual, and Django will automatically use the tenant's schema.
+
+    For example, in `core/views.py`:
+
+    ```plaintext
+    # core/views.py
+    from django.shortcuts import render
+    from .models import Product
+
+    def product_list(request):
+        products = Product.objects.all()
+        return render(request, 'core/product_list.html', {'products': products})
+    ```
+
+    The `Product.objects.all()` query will retrieve products from the currently active tenant's schema.
+
+3.  **Accessing the Public Schema:**
+
+    Sometimes, you need to access data in the public schema. `django-tenants` provides a context manager for this:
+
+    ```plaintext
+    from django_tenants.utils import schema_context
+
+    def my_view(request):
+        with schema_context('public'):
+            # Access models from the public schema
+            # Example:  Get all users (if users are in the shared app)
+            from django.contrib.auth.models import User
+            users = User.objects.all()
+            # ... do something with users ...
+        # Outside the context manager, you are back in the tenant's schema.
+        return render(request, 'my_template.html', {'users': users})
+    ```
+
+## URL Configuration
+
+You need to configure your URL patterns to handle tenant-specific and public URLs. Typically, the root `urls.py` will handle public URLs (e.g., signup, login), and each tenant's schema will have its own set of URLs.
+
+Example:
+
+- **`saas_project/urls.py` (Public URLs):**
+
+  ```plaintext
+  # saas_project/urls.py
+
+  from django.urls import path, include
+  from django.contrib import admin
+
+
+  urlpatterns = [
+      path('admin/', admin.site.urls),  # Public admin (optional)
+      path('accounts/', include('django.contrib.auth.urls')),  # Login/logout
+      # Add your public-facing URLs here (e.g., signup)
+  ]
+  ```
+
+- **`core/urls.py` (Tenant-Specific URLs):**
+
+  ```plaintext
+  # core/urls.py
+
+  from django.urls import path
+  from . import views
+
+  urlpatterns = [
+      path('products/', views.product_list, name='product_list'),
+  ]
+  ```
+
+  To include these tenant-specific URLs, you'll need to add the following into `settings.py`:
+
+  ```plaintext
+  TENANT_APPS = (
+      ...
+      'core',  # Example tenant app
+  )
+
+  TENANT_URLCONF = 'core.urls'
+  ```
+
+## Custom Management Commands
+
+If you need to run management commands on specific tenants or on the public schema, use the `--schema` option:
+
+```plaintext
+python manage.py my_custom_command --schema=tenant1
+python manage.py my_custom_command --schema=public
+```
+
+## Best Practices and Considerations
+
+- **Database Design:** Carefully plan which data should be shared across all tenants and which should be tenant-specific.
+- **Security:** Implement robust security measures to prevent data breaches between tenants. Ensure proper data isolation and access controls.
+- **Scalability:** Monitor your database performance and consider using techniques like database sharding to scale your application effectively.
+- **Testing:** Thoroughly test your application to ensure that data is correctly isolated and that the application behaves as expected for each tenant.
+- **Tenant Limits:** Consider implementing mechanisms to limit resource usage per tenant (e.g., storage space, API requests).
+- **Custom Domain Mapping:** Allow tenants to use their own custom domains by configuring DNS records and updating the `Domain` model.
+- **Admin Interface:** Customize the Django admin interface to provide tenant-specific management tools.
+- **Backup and Restore:** Implement a robust backup and restore strategy that considers the multi-tenant architecture.
+- **Tenant Management Interface:** Create an interface where admins can manage tenants (create, update, delete).
+
+## Example: Tenant Signup Flow
+
+A common scenario is to allow users to sign up and automatically create a new tenant. Here's a simplified example:
+
+```plaintext
+# public/views.py (Hypothetical 'public' app)
+
+from django.shortcuts import render, redirect
+from django.urls import reverse
+from tenants.models import Client, Domain
+from django.contrib import messages
+
+def signup(request):
+    if request.method == 'POST':
+        tenant_name = request.POST.get('tenant_name')
+        domain_name = request.POST.get('domain_name') # e.g., mycompany.yourdomain.com
+
+        # Validate data (e.g., check if tenant_name and domain_name are unique)
+        # ... validation logic ...
+
+        if Client.objects.filter(name=tenant_name).exists():
+           messages.error(request, "Tenant with this name already exists.")
+           return render(request, 'public/signup.html')
+
+        if Domain.objects.filter(domain=domain_name).exists():
+           messages.error(request, "Domain is already taken")
+           return render(request, 'public/signup.html')
+
+        # Create the tenant and domain
+        try:
+            tenant = Client(name=tenant_name)
+            tenant.save() # This automatically creates the schema
+
+            domain = Domain(domain=domain_name, tenant=tenant)
+            domain.is_primary = True
+            domain.save()
+
+            # Optionally, create an initial user for the tenant
+            # with schema_context(tenant.schema_name):
+            #    from django.contrib.auth.models import User
+            #    user = User.objects.create_user(...)
+
+
+            messages.success(request, "Your tenant has been created! You can now log in.")
+            return redirect(reverse('login')) # Redirect to the login page
+
+        except Exception as e:
+            # Handle errors (e.g., database errors)
+            print(f"Error creating tenant: {e}")
+            messages.error(request, "An error occurred while creating your tenant.")
+            return render(request, 'public/signup.html')
+
+    return render(request, 'public/signup.html')
+```
+
+**Remember:**
+
+- You need to create appropriate templates (`public/signup.html`).
+- Implement thorough validation.
+- Handle potential errors gracefully.
+
+## Conclusion
+
+`django-tenants` provides a robust and efficient way to build multi-tenant SaaS applications with Django. By using schema-based tenancy, you can achieve excellent data isolation, scalability, and maintainability. Remember to carefully plan your database design, implement security best practices, and thoroughly test your application to ensure a successful multi-tenant implementation. This guide provides a solid foundation for building your next SaaS application using Django and `django-tenants`. Good luck!
