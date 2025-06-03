@@ -1,0 +1,518 @@
+---
+title: 'Mocking AWS Services (S3, SQS) in Spring Boot for Local Development: A Comprehensive Guide'
+date: '2024-02-29'
+lastmod: '2024-02-29'
+tags: ['spring boot', 'aws', 'mocking', 's3', 'sqs', 'local development', 'testing', 'moto', 'junit', 'integration testing']
+draft: false
+summary: 'Learn how to mock AWS services like S3 and SQS in your Spring Boot application for efficient and reliable local development and testing. Explore various techniques using Moto, JUnit, and Spring profiles with detailed code examples.'
+authors: ['default']
+---
+
+# Mocking AWS Services (S3, SQS) in Spring Boot for Local Development: A Comprehensive Guide
+
+Developing applications that interact with AWS services like S3 and SQS can be challenging, especially when you need to test them locally. Constantly interacting with the real AWS environment during development can be slow, costly, and potentially risky.  This blog post provides a comprehensive guide on how to effectively mock AWS services within your Spring Boot application for local development and testing, focusing on S3 and SQS. We'll explore various techniques and tools, including Moto, JUnit, and Spring profiles, ensuring a smooth and efficient development workflow.
+
+## Why Mock AWS Services in Local Development?
+
+Mocking AWS services during local development offers several advantages:
+
+*   **Faster Development Cycles:** Eliminate the latency associated with interacting with the real AWS cloud, significantly speeding up your development process.
+*   **Cost Reduction:** Avoid incurring charges for frequent access to AWS services during development and testing.
+*   **Improved Reliability:**  Isolate your application from network issues and AWS service outages, ensuring stable and predictable tests.
+*   **Simplified Testing:**  Simulate various scenarios and error conditions without affecting your production environment.
+*   **Enhanced Security:** Prevent accidental modifications or deletions of data in your real AWS environment.
+
+## Strategies for Mocking AWS Services in Spring Boot
+
+Here are a few common strategies to mock AWS services in a Spring Boot environment:
+
+1.  **Manual Mocking:**  Create your own mock implementations of the AWS SDK interfaces. While providing maximum control, this approach can be time-consuming and require significant maintenance.
+2.  **Moto:** A popular Python library that allows you to easily mock AWS services.  You can integrate Moto with your Spring Boot application using a Docker container or directly through HTTP calls.
+3.  **JUnit and Mockito/Mockk:** Leverage JUnit and mocking frameworks like Mockito (Java) or Mockk (Kotlin) to create mock objects for the AWS SDK clients.  This provides fine-grained control over the behavior of the mocked services.
+4.  **Spring Profiles:**  Utilize Spring profiles to switch between real AWS clients and mock implementations based on the environment.  This allows you to easily enable mocking during local development and testing.
+
+## Mocking S3 with Moto in Spring Boot
+
+Moto is an excellent choice for mocking AWS services because it's relatively easy to set up and use.  Here's how you can integrate Moto with your Spring Boot application to mock S3:
+
+**1. Add Dependencies:**
+
+First, you'll need to add the necessary dependencies to your `pom.xml` (Maven) or `build.gradle` (Gradle) file.  For this example, we will use Maven and Java.
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+<dependency>
+    <groupId>com.amazonaws</groupId>
+    <artifactId>aws-java-sdk-s3</artifactId>
+    <version>1.12.677</version> <!--  Use the latest version -->
+</dependency>
+<dependency>
+    <groupId>org.testcontainers</groupId>
+    <artifactId>testcontainers</artifactId>
+    <version>1.19.6</version> <!--  Use the latest version -->
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.testcontainers</groupId>
+    <artifactId>localstack</artifactId>
+    <version>1.19.6</version> <!--  Use the latest version -->
+    <scope>test</scope>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-test</artifactId>
+    <scope>test</scope>
+</dependency>
+```
+
+**2. Configure LocalStack (Moto Wrapper):**
+
+We will use LocalStack, which provides a convenient way to run Moto in a Docker container. Create a `TestConfiguration.java` class in your `src/test/java` directory:
+
+```java
+// src/test/java/com/example/demo/TestConfiguration.java
+package com.example.demo;
+
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.client.builder.AwsClientBuilder;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.Profile;
+import org.testcontainers.containers.localstack.LocalStackContainer;
+import org.testcontainers.utility.DockerImageName;
+
+import static org.testcontainers.containers.localstack.LocalStackContainer.Service.S3;
+
+@Configuration
+@Profile("test")
+public class TestConfiguration {
+
+    @Bean
+    public LocalStackContainer localStackContainer() {
+        LocalStackContainer localStackContainer = new LocalStackContainer(DockerImageName.parse("localstack/localstack:2.3.3"))  // Use the latest version tag
+                .withServices(S3);
+        localStackContainer.start();
+        return localStackContainer;
+    }
+
+    @Bean
+    @Primary
+    public AmazonS3 amazonS3(LocalStackContainer localStackContainer) {
+        AWSCredentials credentials = new BasicAWSCredentials("test", "test");
+
+        return AmazonS3ClientBuilder
+                .standard()
+                .withEndpointConfiguration(new AwsClientBuilder.EndpointConfiguration(
+                        localStackContainer.getEndpointOverride(S3).toString(),
+                        localStackContainer.getRegion()
+                ))
+                .withCredentials(new AWSStaticCredentialsProvider(credentials))
+                .build();
+    }
+}
+```
+
+**Explanation:**
+
+*   `@Configuration`: Marks this class as a configuration class.
+*   `@Profile("test")`: Activates this configuration only when the "test" Spring profile is active.
+*   `LocalStackContainer`:  Uses Testcontainers to create and manage a LocalStack Docker container.  We specify that we only need the S3 service.  Make sure to use a recent version of LocalStack.
+*   `amazonS3` Bean: Creates an `AmazonS3` client configured to connect to the LocalStack instance. It uses dummy credentials ("test", "test") and retrieves the endpoint and region from the LocalStack container. `@Primary` annotation tells Spring to use this bean over any other `AmazonS3` bean when the `test` profile is active.
+
+**3. Create an S3 Service:**
+
+```java
+// src/main/java/com/example/demo/S3Service.java
+package com.example.demo;
+
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.model.PutObjectRequest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import java.io.File;
+
+@Service
+public class S3Service {
+
+    @Autowired
+    private AmazonS3 amazonS3;
+
+    public void uploadFile(String bucketName, String keyName, File file) {
+        amazonS3.putObject(new PutObjectRequest(bucketName, keyName, file));
+    }
+
+    public boolean doesBucketExist(String bucketName) {
+        return amazonS3.doesBucketExistV2(bucketName);
+    }
+
+    public void createBucket(String bucketName) {
+        amazonS3.createBucket(bucketName);
+    }
+}
+```
+
+**4. Create a Test Case:**
+
+```java
+// src/test/java/com/example/demo/S3ServiceTest.java
+package com.example.demo;
+
+import com.amazonaws.services.s3.AmazonS3;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.io.File;
+import java.io.IOException;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+@SpringBootTest
+@ActiveProfiles("test")
+public class S3ServiceTest {
+
+    @Autowired
+    private S3Service s3Service;
+
+    @Autowired
+    private AmazonS3 amazonS3;
+
+    private final String bucketName = "test-bucket";
+
+    @BeforeEach
+    void setup() {
+        // Create the bucket if it doesn't exist
+        if (!s3Service.doesBucketExist(bucketName)) {
+            s3Service.createBucket(bucketName);
+        }
+    }
+
+    @Test
+    void testUploadFile() throws IOException {
+        // Create a dummy file
+        File tempFile = File.createTempFile("test", ".txt");
+        tempFile.deleteOnExit();
+
+
+        // Upload the file
+        s3Service.uploadFile(bucketName, "test-file.txt", tempFile);
+
+        // Assert that the file was uploaded (by checking its existence in the bucket)
+        assertTrue(amazonS3.doesObjectExist(bucketName, "test-file.txt"));
+    }
+}
+```
+
+**Explanation:**
+
+*   `@SpringBootTest`:  Indicates that this is a Spring Boot test.
+*   `@ActiveProfiles("test")`:  Activates the "test" Spring profile, which in turn activates the `TestConfiguration` and uses the mocked `AmazonS3` client.
+*   `@Autowired`:  Injects the `S3Service` and the mocked `AmazonS3` client.
+*   The `testUploadFile` method creates a temporary file, uploads it to the mocked S3 bucket using `s3Service.uploadFile`, and then asserts that the file exists in the bucket using `amazonS3.doesObjectExist`.
+
+**5. Run the Test:**
+
+Run the `S3ServiceTest` class.  The test should pass, indicating that your Spring Boot application is successfully interacting with the mocked S3 service provided by LocalStack and Moto.  The LocalStack container will automatically start and stop with the test.
+
+## Mocking SQS with Moto in Spring Boot
+
+The process for mocking SQS is very similar to mocking S3. Here's how you can do it:
+
+**1. Update Dependencies (pom.xml):**
+
+Add the SQS dependency to your `pom.xml`.  We'll reuse the `testcontainers` and `localstack` dependencies we already added.
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>com.amazonaws</groupId>
+    <artifactId>aws-java-sdk-sqs</artifactId>
+    <version>1.12.677</version> <!-- Use the latest version -->
+</dependency>
+```
+
+**2. Update TestConfiguration.java to include SQS:**
+
+Modify `TestConfiguration.java` to include the SQS service in the LocalStack container and configure the `AmazonSQS` client.
+
+```java
+// src/test/java/com/example/demo/TestConfiguration.java
+package com.example.demo;
+
+import com.amazonaws.auth.AWSCredentials;
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.client.builder.AwsClientBuilder;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.sqs.AmazonSQS;
+import com.amazonaws.services.sqs.AmazonSQSClientBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.context.annotation.Profile;
+import org.testcontainers.containers.localstack.LocalStackContainer;
+import org.testcontainers.utility.DockerImageName;
+
+import static org.testcontainers.containers.localstack.LocalStackContainer.Service.S3;
+import static org.testcontainers.containers.localstack.LocalStackContainer.Service.SQS;
+
+@Configuration
+@Profile("test")
+public class TestConfiguration {
+
+    @Bean
+    public LocalStackContainer localStackContainer() {
+        LocalStackContainer localStackContainer = new LocalStackContainer(DockerImageName.parse("localstack/localstack:2.3.3")) // Use the latest version tag
+                .withServices(S3, SQS); // Include SQS
+        localStackContainer.start();
+        return localStackContainer;
+    }
+
+    @Bean
+    @Primary
+    public AmazonS3 amazonS3(LocalStackContainer localStackContainer) {
+        AWSCredentials credentials = new BasicAWSCredentials("test", "test");
+
+        return AmazonS3ClientBuilder
+                .standard()
+                .withEndpointConfiguration(new AwsClientBuilder.EndpointConfiguration(
+                        localStackContainer.getEndpointOverride(S3).toString(),
+                        localStackContainer.getRegion()
+                ))
+                .withCredentials(new AWSStaticCredentialsProvider(credentials))
+                .build();
+    }
+
+    @Bean
+    @Primary
+    public AmazonSQS amazonSQS(LocalStackContainer localStackContainer) {
+        AWSCredentials credentials = new BasicAWSCredentials("test", "test");
+
+        return AmazonSQSClientBuilder
+                .standard()
+                .withEndpointConfiguration(new AwsClientBuilder.EndpointConfiguration(
+                        localStackContainer.getEndpointOverride(SQS).toString(),
+                        localStackContainer.getRegion()
+                ))
+                .withCredentials(new AWSStaticCredentialsProvider(credentials))
+                .build();
+    }
+}
+```
+
+**3. Create an SQS Service:**
+
+```java
+// src/main/java/com/example/demo/SqsService.java
+package com.example.demo;
+
+import com.amazonaws.services.sqs.AmazonSQS;
+import com.amazonaws.services.sqs.model.SendMessageRequest;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+@Service
+public class SqsService {
+
+    @Autowired
+    private AmazonSQS amazonSQS;
+
+    public void sendMessage(String queueUrl, String messageBody) {
+        SendMessageRequest sendMessageRequest = new SendMessageRequest()
+                .withQueueUrl(queueUrl)
+                .withMessageBody(messageBody);
+        amazonSQS.sendMessage(sendMessageRequest);
+    }
+
+    public String getQueueUrl(String queueName){
+        return amazonSQS.getQueueUrl(queueName).getQueueUrl();
+    }
+
+    public void createQueue(String queueName) {
+        amazonSQS.createQueue(queueName);
+    }
+}
+```
+
+**4. Create a Test Case:**
+
+```java
+// src/test/java/com/example/demo/SqsServiceTest.java
+package com.example.demo;
+
+import com.amazonaws.services.sqs.AmazonSQS;
+import com.amazonaws.services.sqs.model.ReceiveMessageRequest;
+import com.amazonaws.services.sqs.model.ReceiveMessageResult;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
+@SpringBootTest
+@ActiveProfiles("test")
+public class SqsServiceTest {
+
+    @Autowired
+    private SqsService sqsService;
+
+    @Autowired
+    private AmazonSQS amazonSQS;
+
+    private final String queueName = "test-queue";
+    private String queueUrl;
+
+    @BeforeEach
+    void setup() {
+        // Create the queue if it doesn't exist
+        try {
+            sqsService.createQueue(queueName);
+        } catch (Exception e) {
+            // Queue might already exist, ignore
+        }
+        queueUrl = sqsService.getQueueUrl(queueName);
+    }
+
+    @Test
+    void testSendMessage() {
+        String messageBody = "Hello, SQS!";
+
+        // Send the message
+        sqsService.sendMessage(queueUrl, messageBody);
+
+        // Receive the message
+        ReceiveMessageRequest receiveMessageRequest = new ReceiveMessageRequest(queueUrl)
+                .withMaxNumberOfMessages(1)
+                .withWaitTimeSeconds(5);
+
+        ReceiveMessageResult receiveMessageResult = amazonSQS.receiveMessage(receiveMessageRequest);
+
+        // Assert that the message was received and the body matches
+        assertNotNull(receiveMessageResult.getMessages());
+        assertEquals(1, receiveMessageResult.getMessages().size());
+        assertEquals(messageBody, receiveMessageResult.getMessages().get(0).getBody());
+    }
+}
+```
+
+**5. Run the Test:**
+
+Run the `SqsServiceTest` class. The test should pass, confirming that you're successfully interacting with the mocked SQS service.
+
+## Mocking with JUnit and Mockito/Mockk
+
+While LocalStack is powerful, sometimes you might want more granular control over the behavior of your mocked services.  This is where JUnit and mocking frameworks like Mockito come in handy.  Let's look at an example of mocking S3 with Mockito.
+
+**1. Dependencies (pom.xml):**
+
+Make sure you have the Mockito dependency in your `pom.xml`:
+
+```xml
+<dependency>
+    <groupId>org.mockito</groupId>
+    <artifactId>mockito-junit-jupiter</artifactId>
+    <version>5.11.0</version> <!-- Use the latest version -->
+    <scope>test</scope>
+</dependency>
+```
+
+**2.  Create a Mocked S3 Service Test:**
+
+```java
+// src/test/java/com/example/demo/S3ServiceMockitoTest.java
+package com.example.demo;
+
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.model.PutObjectRequest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+import java.io.File;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+
+@ExtendWith(MockitoExtension.class)
+public class S3ServiceMockitoTest {
+
+    @Mock
+    private AmazonS3 amazonS3;
+
+    @InjectMocks
+    private S3Service s3Service;
+
+    @Test
+    void testUploadFileWithMockito() {
+        // Create a dummy file
+        File tempFile = new File("test-file.txt");
+
+        // Call the uploadFile method
+        s3Service.uploadFile("test-bucket", "test-key.txt", tempFile);
+
+        // Verify that the putObject method was called on the mock AmazonS3 client
+        verify(amazonS3, times(1)).putObject(any(PutObjectRequest.class));
+    }
+}
+```
+
+**Explanation:**
+
+*   `@ExtendWith(MockitoExtension.class)`: Initializes Mockito annotations.
+*   `@Mock`: Creates a mock instance of `AmazonS3`.
+*   `@InjectMocks`:  Creates an instance of `S3Service` and injects the mocked `AmazonS3` dependency into it.
+*   `verify(amazonS3, times(1)).putObject(any(PutObjectRequest.class))`:  Asserts that the `putObject` method on the mocked `AmazonS3` client was called exactly once with any `PutObjectRequest`.
+
+**Advantages of JUnit and Mockito:**
+
+*   **Fine-grained control:**  You can precisely define the behavior of the mocked objects.
+*   **Unit testing focus:**  Ideal for testing individual units of code in isolation.
+*   **No external dependencies:**  Doesn't require Docker or external services.
+
+**Disadvantages:**
+
+*   **More setup:**  Requires more configuration and setup compared to using LocalStack.
+*   **Limited realism:**  May not accurately represent the behavior of the real AWS services.
+
+## Spring Profiles for Mocking
+
+Spring Profiles offer a clean way to switch between real and mocked AWS clients based on the active environment. We already used this in conjunction with LocalStack. Here's a recap and some additional considerations:
+
+*   **`@Profile("test")`:** Annotate your test configuration (like `TestConfiguration.java`) with `@Profile("test")`.  This ensures that the mock beans are only created when the "test" profile is active.
+*   **`@ActiveProfiles("test")`:** Annotate your test classes with `@ActiveProfiles("test")` to activate the "test" profile during testing.
+*   **`@Primary`:** Use the `@Primary` annotation on the mock bean definitions. This tells Spring to prefer the mock bean over the real bean when the profile is active.
+
+This approach makes it easy to switch between using real AWS services in your production environment and mocked services in your local development and testing environments.  You can manage active profiles using environment variables, command-line arguments, or application properties.
+
+## Choosing the Right Approach
+
+The best approach for mocking AWS services depends on your specific needs and priorities:
+
+*   **LocalStack (Moto):**  Suitable for integration testing and simulating the overall behavior of AWS services. Easy to set up and provides a relatively realistic environment.
+*   **JUnit and Mockito/Mockk:** Ideal for unit testing individual components in isolation, providing fine-grained control over the behavior of mocked services.
+*   **Spring Profiles:**  A convenient way to switch between real and mocked implementations based on the environment, enhancing flexibility and maintainability.
+
+By combining these techniques, you can create a robust and efficient testing strategy for your Spring Boot applications that interact with AWS services.  Remember to consider the tradeoffs between realism, control, and ease of use when selecting the appropriate mocking approach.
+
+## Conclusion
+
+Mocking AWS services like S3 and SQS is crucial for efficient and reliable local development and testing of Spring Boot applications. This guide has provided a comprehensive overview of different mocking strategies, including Moto (LocalStack), JUnit with Mockito, and Spring profiles. By implementing these techniques, you can accelerate your development cycles, reduce costs, improve test reliability, and enhance the overall quality of your applications. Choose the approach that best suits your needs and enjoy a smoother, more productive development experience!

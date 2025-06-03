@@ -1,0 +1,629 @@
+---
+title: "Prevent Brute-Force Attacks on Spring Boot Login Endpoints: Comprehensive Guide"
+date: "2024-01-01"
+lastmod: "2024-01-05"
+tags: ["spring boot", "security", "brute-force", "login", "rate limiting", "authentication", "java", "web security"]
+draft: false
+summary: "Learn how to effectively prevent brute-force attacks on your Spring Boot login endpoints with rate limiting, account locking, CAPTCHA integration, and more. This comprehensive guide provides code examples and best practices."
+authors: ["default"]
+---
+
+# Prevent Brute-Force Attacks on Spring Boot Login Endpoints: Comprehensive Guide
+
+Brute-force attacks are a common threat to web applications, especially those with login functionalities. Attackers try to guess usernames and passwords by repeatedly submitting different combinations until they gain access. This article provides a comprehensive guide to prevent brute-force attacks on your Spring Boot login endpoints, ensuring the security of your application and user data. We will cover various techniques, including rate limiting, account locking, CAPTCHA integration, and best practices.
+
+## Understanding Brute-Force Attacks
+
+Before diving into the solutions, it's crucial to understand how brute-force attacks work.  A brute-force attack essentially automates the process of trying many different login credentials.  Attackers may use:
+
+*   **Dictionary attacks:**  Trying common passwords from a pre-built dictionary.
+*   **Credential stuffing:** Using leaked credentials obtained from other breaches.
+*   **Reverse brute-forcing:**  Trying many different usernames against a single known password.
+
+The goal is always the same: to bypass your authentication mechanism.  Without proper protection, your application is vulnerable.
+
+## 1. Rate Limiting
+
+Rate limiting is a fundamental technique to mitigate brute-force attacks. It restricts the number of login attempts allowed from a specific IP address or user within a defined time window.
+
+### 1.1 Using Spring Retry and Caffeine Cache (Example)
+
+This approach leverages Spring Retry and Caffeine cache for a simple rate limiting solution.
+
+First, add the necessary dependencies to your `pom.xml`:
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>com.github.ben-manes.caffeine</groupId>
+        <artifactId>caffeine</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.retry</groupId>
+        <artifactId>spring-retry</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+</dependencies>
+```
+
+Create a configuration class to enable retry and AOP:
+
+```java
+import org.springframework.context.annotation.Configuration;
+import org.springframework.retry.annotation.EnableRetry;
+import org.springframework.context.annotation.EnableAspectJAutoProxy;
+
+@Configuration
+@EnableRetry
+@EnableAspectJAutoProxy
+public class RetryConfig {
+}
+```
+
+Create a Rate Limiter Service:
+
+```java
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import org.springframework.stereotype.Service;
+
+import java.util.concurrent.TimeUnit;
+
+@Service
+public class RateLimiterService {
+
+    private final Cache<String, Integer> loginAttemptsCache;
+    private final int maxAttempts = 5;
+    private final int blockTime = 1; // block for 1 minute
+
+    public RateLimiterService() {
+        loginAttemptsCache = Caffeine.newBuilder()
+                .expireAfterWrite(blockTime, TimeUnit.MINUTES)
+                .maximumSize(10000) // Adjust size as needed
+                .build();
+    }
+
+    public void registerLoginAttempt(String key) {
+        int attempts = loginAttemptsCache.get(key, k -> 0);
+        loginAttemptsCache.put(key, attempts + 1);
+    }
+
+    public boolean isBlocked(String key) {
+        Integer attempts = loginAttemptsCache.getIfPresent(key);
+        return attempts != null && attempts >= maxAttempts;
+    }
+
+    public void resetLoginAttempts(String key) {
+        loginAttemptsCache.invalidate(key);
+    }
+}
+```
+
+Implement the `AuthenticationProvider` and inject `RateLimiterService`:
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class CustomAuthenticationProvider implements AuthenticationProvider {
+
+    @Autowired
+    private UserDetailsService userDetailsService;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private RateLimiterService rateLimiterService;
+
+    @Override
+    public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+        String username = authentication.getName();
+        String password = authentication.getCredentials().toString();
+
+        if (rateLimiterService.isBlocked(username)) {
+            throw new BadCredentialsException("Account is locked due to too many failed attempts.");
+        }
+
+        UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+
+        if (userDetails == null) {
+            throw new BadCredentialsException("Invalid username or password.");
+        }
+
+        if (!passwordEncoder.matches(password, userDetails.getPassword())) {
+            rateLimiterService.registerLoginAttempt(username);
+            throw new BadCredentialsException("Invalid username or password.");
+        }
+
+        rateLimiterService.resetLoginAttempts(username); // Reset on successful login
+
+        return new UsernamePasswordAuthenticationToken(username, password, userDetails.getAuthorities());
+    }
+
+    @Override
+    public boolean supports(Class<?> authentication) {
+        return authentication.equals(UsernamePasswordAuthenticationToken.class);
+    }
+}
+```
+
+Configure the `AuthenticationManagerBuilder` in your security configuration:
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Autowired
+    private CustomAuthenticationProvider customAuthenticationProvider;
+
+    @Override
+    protected void configure(AuthenticationManagerBuilder auth) throws Exception {
+        auth.authenticationProvider(customAuthenticationProvider);
+    }
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.csrf().disable()
+            .authorizeRequests()
+            .antMatchers("/login").permitAll()
+            .anyRequest().authenticated()
+            .and()
+            .formLogin()
+            .permitAll()
+            .and()
+            .logout()
+            .permitAll();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    @Override
+    public AuthenticationManager authenticationManagerBean() throws Exception {
+        return super.authenticationManagerBean();
+    }
+}
+```
+
+This approach demonstrates a basic rate limiting mechanism using a simple cache.  For more robust solutions, consider using libraries designed specifically for rate limiting.  Also, consider applying rate limiting based on IP address instead of/or in addition to username.
+
+### 1.2 Using Bucket4j (Advanced)
+
+[Bucket4j](https://github.com/vladimir-bukhtoyarov/bucket4j) is a powerful rate-limiting library that offers advanced features like distributed rate limiting.
+
+**Add Bucket4j Dependency:**
+
+```xml
+<dependency>
+    <groupId>com.github.vladimir-bukhtoyarov</groupId>
+    <artifactId>bucket4j-spring-boot-starter</artifactId>
+    <version>7.6.0</version>
+</dependency>
+```
+
+**Configuration:**
+
+Configure Bucket4j in your `application.yml` or `application.properties`:
+
+```yaml
+bucket4j:
+  enabled: true
+  filters:
+    - cache-name: loginAttempts
+      url: /login
+      expression: request.remoteAddr
+      strategy: first
+      buckets:
+        - bandwidths:
+            - capacity: 5
+              time: 1m
+```
+
+This configuration limits login attempts from the same IP address to 5 per minute. The `expression: request.remoteAddr` specifies that the rate limiting should be based on the client's IP address.
+
+**Handling the Rejected Requests:**
+
+Create a class implementing `Bucket4jErrorHandler` to handle cases where requests are rejected due to rate limiting.
+
+```java
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
+import com.bucket4j.core.exceptions.TooManyRequestsException;
+import com.bucket4j.spring.webflux.Bucket4jErrorHandler;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+import java.io.IOException;
+
+@Component
+public class CustomBucket4jErrorHandler implements Bucket4jErrorHandler {
+
+    @Override
+    public Mono<Void> handleRejectedAuthentication(ServerWebExchange exchange, TooManyRequestsException e) {
+        HttpServletResponse response = (HttpServletResponse) exchange.getResponse();
+        response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        try {
+            response.getWriter().write("{\"message\": \"Too many login attempts. Please try again later.\"}");
+        } catch (IOException ex) {
+            // Handle IO exception
+        }
+        return Mono.empty();
+    }
+}
+```
+
+*This Bucket4j example utilizes the spring-webflux module, adapt if your project uses Spring MVC.*
+*You can create a filter with `@Component` to define the bucket configuration or define via application.yml or properties file.*
+
+## 2. Account Locking
+
+Account locking temporarily disables a user's account after a certain number of failed login attempts.
+
+### Implementation Steps:
+
+1.  **Track Failed Attempts:**  Store the number of failed login attempts for each user (e.g., in the database or a cache).
+2.  **Lock Threshold:**  Define a threshold (e.g., 5 failed attempts).
+3.  **Lock Duration:**  Determine the duration for which the account will be locked (e.g., 15 minutes).
+4.  **Unlock Mechanism:**  Provide a mechanism for users to unlock their accounts (e.g., email verification or administrator intervention).
+
+**Example (using database):**
+
+Add `failedLoginAttempts` and `accountLocked` to your user entity.
+
+```java
+@Entity
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    private String username;
+    private String password;
+
+    private int failedLoginAttempts = 0;
+    private boolean accountLocked = false;
+    private LocalDateTime lockTime;  // Timestamp of when the account was locked.
+
+    // Getters and setters
+}
+```
+
+**Update Authentication Provider:**
+
+Modify your `AuthenticationProvider` to check for account locking and increment failed attempts:
+
+```java
+@Component
+public class CustomAuthenticationProvider implements AuthenticationProvider {
+
+    @Autowired
+    private UserDetailsService userDetailsService;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private UserRepository userRepository; // Assuming you have a UserRepository
+
+    @Override
+    public Authentication authenticate(Authentication authentication) throws AuthenticationException {
+        String username = authentication.getName();
+        String password = authentication.getCredentials().toString();
+
+        UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+
+        if (userDetails == null) {
+            throw new BadCredentialsException("Invalid username or password.");
+        }
+
+        User user = userRepository.findByUsername(username).orElse(null);
+        if (user != null) {
+            if (user.isAccountLocked()) {
+                if (user.getLockTime().isAfter(LocalDateTime.now())) { //check lock time has not expired.
+                  throw new LockedException("Account is locked. Please try again later.");
+                } else {
+                  user.setAccountLocked(false);
+                  user.setFailedLoginAttempts(0);
+                  userRepository.save(user);
+                }
+            }
+        }
+
+        if (!passwordEncoder.matches(password, userDetails.getPassword())) {
+            if (user != null) {
+                user.setFailedLoginAttempts(user.getFailedLoginAttempts() + 1);
+                if (user.getFailedLoginAttempts() >= 5) {
+                    user.setAccountLocked(true);
+                    user.setLockTime(LocalDateTime.now().plusMinutes(15)); //Lock for 15 minutes
+                }
+                userRepository.save(user);
+                throw new BadCredentialsException("Invalid username or password.");
+            } else {
+                throw new BadCredentialsException("Invalid username or password.");
+            }
+        }
+
+        if (user != null){
+          user.setFailedLoginAttempts(0);
+          user.setAccountLocked(false);
+          userRepository.save(user);
+        }
+        return new UsernamePasswordAuthenticationToken(username, password, userDetails.getAuthorities());
+    }
+
+    @Override
+    public boolean supports(Class<?> authentication) {
+        return authentication.equals(UsernamePasswordAuthenticationToken.class);
+    }
+}
+```
+
+This example demonstrates a simple account locking mechanism.  Consider adding more sophisticated logic for unlock requests.
+
+## 3. CAPTCHA Integration
+
+CAPTCHA (Completely Automated Public Turing test to tell Computers and Humans Apart) is a challenge-response test used to differentiate humans from automated bots.
+
+### Implementing CAPTCHA:
+
+1.  **Choose a CAPTCHA Provider:** Popular options include Google reCAPTCHA and hCaptcha.
+2.  **Integrate the CAPTCHA Library:** Add the necessary dependencies to your project.
+3.  **Display the CAPTCHA:** Include the CAPTCHA widget on your login page.
+4.  **Verify the CAPTCHA Response:**  Verify the CAPTCHA response on the server-side before processing the login request.
+
+**Example using Google reCAPTCHA v3:**
+
+1.  **Sign up for reCAPTCHA v3:** Get your site key and secret key from the Google reCAPTCHA website.
+
+2.  **Add Dependency:**
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-thymeleaf</artifactId>
+</dependency>
+<dependency>
+    <groupId>org.apache.httpcomponents</groupId>
+    <artifactId>httpclient</artifactId>
+</dependency>
+```
+
+3. Create a `ReCaptchaService` to verify the reCAPTCHA response.
+
+```java
+import org.apache.http.HttpResponse;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.entity.UrlEncodedFormEntity;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.impl.client.HttpClients;
+import org.apache.http.message.BasicNameValuePair;
+import org.apache.http.util.EntityUtils;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import java.util.ArrayList;
+import java.util.List;
+
+@Service
+public class ReCaptchaService {
+
+    @Value("${recaptcha.secret.key}")
+    private String recaptchaSecretKey;
+
+    @Value("${recaptcha.verify.url}")
+    private String recaptchaVerifyUrl;
+
+    public boolean verifyRecaptcha(String recaptchaResponse) {
+        try {
+            HttpClient client = HttpClients.createDefault();
+            HttpPost post = new HttpPost(recaptchaVerifyUrl);
+            List<BasicNameValuePair> postParams = new ArrayList<>();
+            postParams.add(new BasicNameValuePair("secret", recaptchaSecretKey));
+            postParams.add(new BasicNameValuePair("response", recaptchaResponse));
+            post.setEntity(new UrlEncodedFormEntity(postParams));
+
+            HttpResponse response = client.execute(post);
+            String jsonOutput = EntityUtils.toString(response.getEntity());
+
+            // Parse the JSON response (e.g., using Jackson or Gson)
+            // Example (assuming Jackson):
+            com.fasterxml.jackson.databind.JsonNode jsonNode = new com.fasterxml.jackson.databind.ObjectMapper().readTree(jsonOutput);
+            boolean success = jsonNode.get("success").asBoolean();
+            return success;
+
+        } catch (Exception e) {
+            e.printStackTrace(); // Log the error appropriately.
+            return false;
+        }
+    }
+}
+```
+
+4. Update `application.properties`
+
+```properties
+recaptcha.secret.key=YOUR_RECAPTCHA_SECRET_KEY
+recaptcha.verify.url=https://www.google.com/recaptcha/api/siteverify
+recaptcha.site.key=YOUR_RECAPTCHA_SITE_KEY
+```
+
+5.  **Modify the Login Form:**
+   Include the `g-recaptcha-response` field on the login page.  This typically involves JavaScript provided by reCAPTCHA.  You can get the javascript from the reCAPTCHA website.  The form should look like this.
+
+```html
+  <form action="/login" method="post">
+    <div>
+        <label for="username">Username:</label>
+        <input type="text" id="username" name="username" required>
+    </div>
+    <div>
+        <label for="password">Password:</label>
+        <input type="password" id="password" name="password" required>
+    </div>
+
+    <input type="hidden" id="g-recaptcha-response" name="g-recaptcha-response" />
+
+    <div>
+        <button type="submit">Log In</button>
+    </div>
+</form>
+
+<script src="https://www.google.com/recaptcha/api.js?render=YOUR_RECAPTCHA_SITE_KEY"></script>
+<script>
+  grecaptcha.ready(function() {
+    grecaptcha.execute('YOUR_RECAPTCHA_SITE_KEY', {action: 'login'}).then(function(token) {
+      document.getElementById('g-recaptcha-response').value = token;
+    });
+  });
+</script>
+```
+
+6. **Verify in Controller:**
+Include a recaptcha verification in your Spring Controller
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
+import org.springframework.ui.Model;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+
+@Controller
+public class LoginController {
+
+    @Autowired
+    private ReCaptchaService reCaptchaService;
+
+    @GetMapping("/login")
+    public String loginForm() {
+        return "login";
+    }
+
+    @PostMapping("/login")
+    public String loginSubmit(@RequestParam String username, @RequestParam String password, @RequestParam("g-recaptcha-response") String recaptchaResponse, Model model) {
+        if (reCaptchaService.verifyRecaptcha(recaptchaResponse)) {
+            // Proceed with authentication if reCAPTCHA is valid
+            // Your authentication logic here
+            return "redirect:/home"; // Redirect to home page after successful login
+        } else {
+            // Handle invalid reCAPTCHA (e.g., display an error message)
+            model.addAttribute("error", "Invalid reCAPTCHA. Please try again.");
+            return "login";
+        }
+    }
+}
+```
+
+This provides a basic example.  Adapt the logic to integrate with your existing authentication flow.
+
+## 4. Two-Factor Authentication (2FA)
+
+2FA adds an extra layer of security by requiring users to provide two different authentication factors.
+
+### Common 2FA Methods:
+
+*   **One-Time Password (OTP):**  Sent via SMS, email, or generated by an authenticator app.
+*   **Hardware Token:**  A physical device that generates OTPs.
+*   **Biometric Authentication:**  Fingerprint scanning, facial recognition, etc.
+
+### Implementation Steps:
+
+1.  **Choose a 2FA Provider:**  Consider using libraries like Spring Security's built-in features or external services like Authy or Twilio.
+2.  **Integrate the 2FA Library:** Add the necessary dependencies to your project.
+3.  **Enable 2FA for Users:**  Allow users to enable 2FA in their account settings.
+4.  **Implement the 2FA Flow:**  During login, prompt the user for their second factor after successful username/password authentication.
+5.  **Verify the Second Factor:**  Verify the second factor against the chosen provider.
+
+Implement 2FA to significantly enhance the security of user accounts.
+
+## 5. Strong Password Policies
+
+Enforcing strong password policies can reduce the likelihood of successful brute-force attacks.
+
+### Best Practices:
+
+*   **Minimum Length:**  Require passwords to be at least 12 characters long.
+*   **Complexity:**  Require passwords to include a mix of uppercase and lowercase letters, numbers, and symbols.
+*   **Password History:**  Prevent users from reusing previously used passwords.
+*   **Regular Password Changes:**  Encourage users to change their passwords periodically.
+*   **Password Strength Meter:**  Provide a visual indicator of password strength during password creation.
+
+You can implement custom validation logic or use libraries like `org.passay` to enforce strong password policies.
+
+## 6. Monitor and Log Login Attempts
+
+Monitoring and logging login attempts provides valuable insights into potential brute-force attacks.
+
+### Implementation Steps:
+
+1.  **Log All Login Attempts:**  Record the username, IP address, timestamp, and result (success/failure) of each login attempt.
+2.  **Implement Monitoring Tools:** Use monitoring tools to detect unusual patterns, such as a high volume of failed login attempts from a specific IP address.
+3.  **Set Up Alerts:**  Configure alerts to notify administrators when suspicious activity is detected.
+
+Tools like Splunk, ELK Stack (Elasticsearch, Logstash, Kibana), and Graylog can be used for centralized logging and monitoring.
+
+## 7. Security Headers
+
+Setting appropriate security headers can protect against various attacks, including some that could be exploited in conjunction with brute-force attempts.
+
+### Important Security Headers:
+
+*   **`X-Frame-Options`:**  Prevents clickjacking attacks.
+*   **`Content-Security-Policy`:**  Controls the resources that the browser is allowed to load.
+*   **`Strict-Transport-Security` (HSTS):**  Forces the browser to use HTTPS.
+*   **`X-Content-Type-Options`:**  Prevents MIME-sniffing attacks.
+*   **`X-XSS-Protection`:**  Enables the browser's built-in XSS filter.
+
+You can configure security headers in your Spring Boot application using a filter or Spring Security configuration.
+
+## 8. Consider using Web Application Firewalls (WAFs)
+
+Web Application Firewalls (WAFs) act as a security layer between your application and the internet.  They can filter malicious traffic, detect and prevent common web attacks, and provide protection against brute-force attempts.  Popular WAF solutions include Cloudflare, AWS WAF, and Azure Web Application Firewall.
+
+## Conclusion
+
+Preventing brute-force attacks requires a multi-layered approach. By implementing rate limiting, account locking, CAPTCHA integration, strong password policies, monitoring, and other security measures, you can significantly reduce the risk of unauthorized access to your Spring Boot applications. Remember to regularly review and update your security measures to stay ahead of evolving threats.  Always consider the specific needs and risk profile of your application when choosing the appropriate security techniques.

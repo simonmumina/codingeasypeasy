@@ -1,0 +1,522 @@
+---
+title: 'Auto-Scale Spring Boot Applications Based on Custom Metrics: A Comprehensive Guide'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['spring boot', 'auto-scaling', 'kubernetes', 'cloud', 'metrics', 'prometheus', 'actuator', 'custom metrics', 'hpa', 'horizontal pod autoscaler']
+draft: false
+summary: 'Learn how to implement auto-scaling for your Spring Boot applications based on custom metrics using Kubernetes, Prometheus, and the Spring Boot Actuator.  Scale your application effectively by monitoring performance characteristics tailored to your business needs.'
+authors: ['default']
+---
+
+# Auto-Scale Spring Boot Applications Based on Custom Metrics: A Comprehensive Guide
+
+Auto-scaling is a crucial aspect of modern application deployment, enabling applications to dynamically adjust their resources based on demand. This ensures optimal performance, high availability, and cost efficiency.  While standard auto-scaling solutions often rely on CPU and memory usage, leveraging custom metrics allows you to scale based on business-specific performance indicators, providing a more granular and effective scaling strategy. This guide provides a comprehensive walkthrough of how to auto-scale Spring Boot applications based on custom metrics, focusing on Kubernetes, Prometheus, and the Spring Boot Actuator.
+
+## Why Auto-Scale Based on Custom Metrics?
+
+Traditional auto-scaling, relying solely on CPU and memory usage, might not always be the most efficient approach. Consider these scenarios:
+
+*   **CPU/Memory Not Indicative:** Your application might perform a lot of I/O operations or have long-running background processes that don't heavily utilize CPU or memory but still impact overall performance.
+*   **Business-Specific Bottlenecks:** You might have a custom queue, the length of which directly correlates with the application's responsiveness. Scaling based on queue length is far more relevant than scaling based on CPU.
+*   **User Experience:** You want to scale based on the number of active users or the average response time, directly impacting the user experience.
+
+Custom metrics provide the flexibility to monitor and scale based on these specific indicators, ensuring your application scales precisely when and how needed.
+
+## Architecture Overview
+
+The solution we'll implement consists of the following components:
+
+1.  **Spring Boot Application:** Our core application, enhanced with Spring Boot Actuator to expose metrics.
+2.  **Custom Metrics:** Code within the application to collect and expose business-specific metrics.
+3.  **Prometheus:** A time-series database that scrapes metrics from the Spring Boot Actuator endpoint.
+4.  **Kubernetes:** The container orchestration platform where our application runs.
+5.  **Horizontal Pod Autoscaler (HPA):** Kubernetes controller that automatically scales the number of pods based on the metrics scraped by Prometheus.
+6.  **Prometheus Adapter (Metrics Server Alternative):** Provides an interface for the HPA to access the custom metrics from Prometheus.
+7.  **kube-prometheus-stack:** An easy way to deploy Prometheus, Grafana and Alertmanager on Kubernetes.
+
+## Prerequisites
+
+Before you begin, ensure you have the following:
+
+*   **Java Development Kit (JDK) 11 or higher:** To build and run the Spring Boot application.
+*   **Maven or Gradle:**  For dependency management and building the application.
+*   **Docker:**  For containerizing the application.
+*   **Kubernetes Cluster:**  A running Kubernetes cluster (e.g., Minikube, Kind, or a cloud-based Kubernetes service).
+*   **kubectl:**  The Kubernetes command-line tool for interacting with your cluster.
+*   **Helm:**  A package manager for Kubernetes.
+
+## Step 1: Create a Spring Boot Application
+
+Let's create a simple Spring Boot application using Spring Initializr (start.spring.io).  Include the following dependencies:
+
+*   **Spring Web:** For building RESTful APIs.
+*   **Spring Boot Actuator:**  For exposing application health and metrics.
+*   **Micrometer Prometheus:**  To expose metrics in Prometheus format.
+
+Here's a basic `pom.xml` (Maven) configuration:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>scaling-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>scaling-demo</name>
+    <description>Demo project for auto-scaling</description>
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+```
+
+## Step 2: Implement Custom Metrics
+
+Now, let's add some code to expose a custom metric.  For this example, we'll simulate a queue size.  We'll create a component that increments and decrements a counter and exposes it as a metric.
+
+```java
+package com.example.scalingdemo;
+
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.stereotype.Component;
+
+import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+@Component
+public class QueueManager {
+
+    private final Counter queueSize;
+    private int currentQueueSize = 0;
+    private final Random random = new Random();
+
+    public QueueManager(MeterRegistry registry) {
+        this.queueSize = Counter.builder("my_queue_size")
+                .description("The current size of the queue")
+                .register(registry);
+
+        // Simulate queue increase and decrease
+        ScheduledExecutorService executorService = Executors.newScheduledThreadPool(1);
+        executorService.scheduleAtFixedRate(() -> {
+            int change = random.nextInt(10) - 5; // Randomly add or remove up to 5 items
+            synchronized (this) {
+                currentQueueSize += change;
+                if (currentQueueSize < 0) {
+                    currentQueueSize = 0; // Ensure queue size doesn't go below zero
+                }
+                for (int i = 0; i < Math.abs(change); i++) {
+                    if (change > 0) {
+                        queueSize.increment();
+                    } else {
+                        // Micrometer doesn't provide a decrement method on counter.
+                        // You will need to use Gauge to represent values that can increase or decrease.
+                        // In this scenario we are simulating a gauge value using increment.  This is just for simplicity.
+                         // In a real application use a Gauge.
+
+                         if (currentQueueSize < Integer.MAX_VALUE){
+                           // We can't decrement if the queue size is 0 and we have negative change.
+
+                         } else{
+                             // Do nothing, the increment is just simulating a Gauge value.
+                         }
+
+                    }
+                }
+            }
+        }, 1, 1, TimeUnit.SECONDS);
+    }
+
+    public double getQueueSize() {
+        return queueSize.count();
+    }
+}
+```
+
+**Explanation:**
+
+*   `@Component`:  Marks the class as a Spring component, making it available for dependency injection.
+*   `MeterRegistry`:  Injected by Spring, it's the central interface for registering metrics.
+*   `Counter queueSize`: A Micrometer `Counter` metric to track the queue size.  We're using a counter as a simple example. In a real-world scenario where the queue size can decrease, a `Gauge` would be more appropriate.
+*   `queueSize.increment()`:  Increments the queue size counter.
+*   `ScheduledExecutorService`: Simulates queue activity by randomly increasing and decreasing the queue size.
+
+Next create a controller to allow us to verify the custom metric.
+
+```java
+package com.example.scalingdemo;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class QueueController {
+
+    private final QueueManager queueManager;
+
+    public QueueController(QueueManager queueManager) {
+        this.queueManager = queueManager;
+    }
+
+    @GetMapping("/queueSize")
+    public double getQueueSize() {
+        return queueManager.getQueueSize();
+    }
+}
+```
+
+**Important:**  For a metric that can both increase and decrease (like a queue size), a `Gauge` is more appropriate than a `Counter`.  A `Counter` only increases.  For simplicity, this example uses a `Counter` and simulates decrementing, but in a production application, use a `Gauge`.
+
+## Step 3: Configure Spring Boot Actuator
+
+To expose the metrics, ensure the `management.endpoints.web.exposure.include` property is set to `*` or includes `prometheus` in your `application.properties` or `application.yml` file.  This exposes the `/actuator/prometheus` endpoint.
+
+```properties
+management.endpoints.web.exposure.include=*
+management.endpoint.health.show-details=always
+```
+
+## Step 4: Containerize the Application
+
+Create a `Dockerfile` to package your application into a Docker image:
+
+```dockerfile
+FROM openjdk:17-jdk-slim
+
+WORKDIR /app
+
+COPY target/*.jar app.jar
+
+EXPOSE 8080
+
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+Build the Docker image:
+
+```bash
+docker build -t scaling-demo .
+```
+
+Push the image to a container registry (e.g., Docker Hub):
+
+```bash
+docker tag scaling-demo your-dockerhub-username/scaling-demo:latest
+docker push your-dockerhub-username/scaling-demo:latest
+```
+
+Replace `your-dockerhub-username` with your actual Docker Hub username.
+
+## Step 5: Deploy to Kubernetes
+
+Create a Kubernetes deployment and service:
+
+**deployment.yaml:**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scaling-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: scaling-demo
+  template:
+    metadata:
+      labels:
+        app: scaling-demo
+    spec:
+      containers:
+        - name: scaling-demo
+          image: your-dockerhub-username/scaling-demo:latest
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaling-demo-service
+spec:
+  selector:
+    app: scaling-demo
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: ClusterIP # Use LoadBalancer if you need external access
+```
+
+Replace `your-dockerhub-username/scaling-demo:latest` with your Docker image.
+
+Apply the deployment and service:
+
+```bash
+kubectl apply -f deployment.yaml
+```
+
+## Step 6: Install Prometheus and Grafana using kube-prometheus-stack Helm Chart
+
+First, add the prometheus-community Helm repository:
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+```
+
+Now, install the kube-prometheus-stack:
+
+```bash
+helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring --create-namespace
+```
+
+This command installs Prometheus, Grafana, Alertmanager, and other components in the `monitoring` namespace.  It also configures Prometheus to discover and scrape metrics from Kubernetes pods.
+
+**Verify Prometheus Installation**
+
+After the installation is complete, verify that the Prometheus pods are running:
+
+```bash
+kubectl get pods -n monitoring
+```
+
+You should see pods related to Prometheus, Grafana, Alertmanager, and other components of the kube-prometheus-stack.
+
+**Access Prometheus**
+
+To access the Prometheus UI, you can use port forwarding:
+
+```bash
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090
+```
+
+Then, open your browser and navigate to `http://localhost:9090`. You should see the Prometheus UI.  You can query for `my_queue_size_total` (the metric exposed by our application) to verify that Prometheus is scraping it.  Note: Prometheus automatically adds the `_total` suffix to counter metrics.
+
+## Step 7: Install Prometheus Adapter
+
+The Prometheus Adapter allows the HPA to query Prometheus for custom metrics.
+
+1.  **Download the Prometheus Adapter Manifests:**
+
+    You can usually find the installation manifests and instructions on the Prometheus Adapter's GitHub repository.  The exact URL may change, but search for "prometheus adapter github" and look for a repository maintained by a trusted organization (e.g., `kubernetes-sigs`).  Download the necessary YAML files for your Kubernetes version.  Typically, this will involve deploying a ClusterRole, ClusterRoleBinding, ServiceAccount, and Deployment.
+
+2.  **Configure the Prometheus Adapter:**
+
+    The Prometheus Adapter needs to know how to query Prometheus for your custom metric.  This is done through a configuration file, usually named something like `configmap.yaml`.  You'll need to create a `metric` entry that tells the adapter how to map the metric name from Prometheus to a name the HPA can use. Here's an example:
+
+    ```yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: prometheus-adapter-config
+      namespace: custom-metrics
+    data:
+      config.yaml: |
+        rules:
+        - seriesQuery: 'my_queue_size_total'  # The Prometheus metric name
+          seriesFilters: []
+          resources:
+            overrides:
+              kubernetes.io/namespace: {resource: namespace}
+              kubernetes.io/pod: {resource: pod}
+          name:
+            asMatch: "my_queue_size" # The metric name the HPA will use. Avoid the word "metric"
+          metricsQuery: sum(rate(my_queue_size_total{<<.LabelMatchers>>}[1m]))
+    ```
+
+    **Explanation:**
+
+    *   `seriesQuery`: Specifies the Prometheus query to identify the metric series.  We are querying for `my_queue_size_total` which is prometheus's naming of the counter for `my_queue_size`.
+    *   `name`:  Defines how the metric will be named when exposed to the HPA.  `asMatch` specifies that the HPA should use the name `my_queue_size`. This is what you will use in the HPA definition.
+    *   `metricsQuery`:  This is the query used to retrieve the actual metric value from Prometheus.  Here, we are using `rate` to calculate the rate of change of the `my_queue_size_total` counter over a 1-minute window.  The `sum` aggregates across all matching series. `<<.LabelMatchers>>`  is a placeholder that the Prometheus Adapter will replace with label filters from the HPA.
+
+3.  **Deploy the Prometheus Adapter:**
+
+    *   Create the `custom-metrics` namespace (if it doesn't exist):
+
+        ```bash
+        kubectl create namespace custom-metrics
+        ```
+
+    *   Deploy the Prometheus Adapter components using `kubectl apply -f <your-manifests-directory>`.  Make sure to deploy the `configmap.yaml` as well.
+
+    *   Verify that the Prometheus Adapter pod is running in the `custom-metrics` namespace.
+
+4.  **Configure the Prometheus Adapter to Point to your Prometheus Instance**
+
+     This often involves modifying the deployment yaml to configure the `--prometheus-url` flag.
+
+     ```yaml
+     spec:
+       containers:
+         - name: prometheus-adapter
+           image: directxman12/k8s-prometheus-adapter:v0.11.1
+           args:
+             - --prometheus-url=http://prometheus-kube-prometheus-prometheus.monitoring.svc
+             - --metrics-reloader-image=quay.io/brancz/kube-rbac-proxy:v0.14.0
+             - --secure-port=6443
+             - --tls-cert-file=/apiserver.local.config/certificates/apiserver.crt
+             - --tls-private-key-file=/apiserver.local.config/certificates/apiserver.key
+             - --config=/etc/adapter/config/config.yaml
+           ports:
+             - name: https
+               containerPort: 6443
+           volumeMounts:
+             - name: adapter-tls
+               mountPath: /apiserver.local.config/certificates
+               readOnly: true
+             - name: config
+               mountPath: /etc/adapter/config
+               readOnly: true
+
+     ```
+
+     **Important:**  Adapt the URL to match the actual service name and namespace where your Prometheus instance is running (in this case `prometheus-kube-prometheus-prometheus.monitoring.svc`).
+
+## Step 8: Create the Horizontal Pod Autoscaler (HPA)
+
+Create an HPA definition that targets the custom metric.
+
+**hpa.yaml:**
+
+```yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: scaling-demo-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: scaling-demo
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: my_queue_size #The metric name defined in the prometheus adapter configmap.
+          selector: {}
+        target:
+          type: AverageValue
+          averageValue: 100 # Scale when the average queue size exceeds 100
+```
+
+**Explanation:**
+
+*   `scaleTargetRef`:  Specifies the deployment to scale.
+*   `minReplicas` and `maxReplicas`:  Define the minimum and maximum number of replicas.
+*   `metrics`:  Defines the scaling metric.
+    *   `type: External`: Indicates that we're using an external metric (from Prometheus).
+    *   `metric.name`: **This is critical!** This must match the `asMatch` value from Prometheus Adapter's configuration.
+    *   `averageValue`: The target average queue size.  The HPA will aim to keep the average queue size across all pods at or below 100.
+
+Apply the HPA:
+
+```bash
+kubectl apply -f hpa.yaml
+```
+
+## Step 9: Test the Auto-Scaling
+
+To trigger auto-scaling, you need to increase the `my_queue_size` metric. Since our application simulates queue activity, this should happen automatically over time.
+
+1.  **Monitor the HPA:**
+
+    Use `kubectl get hpa scaling-demo-hpa -w` to monitor the HPA's status. You should see the number of replicas increase as the `my_queue_size` increases.  The `-w` flag watches for changes.
+
+2.  **Generate Load (Optional):**
+
+    If you want to quickly test the auto-scaling, you can manually increase the rate at which the queue size grows within the application.  Alternatively, you could use a load testing tool to send requests to your application, indirectly increasing the queue size. You could call the `/queueSize` endpoint to verify the current queue size.
+
+3.  **Observe the Pods:**
+
+    Use `kubectl get pods` to observe the creation of new pods as the HPA scales up.
+
+## Step 10: Cleanup
+
+When you're finished testing, clean up the resources:
+
+```bash
+kubectl delete hpa scaling-demo-hpa
+kubectl delete service scaling-demo-service
+kubectl delete deployment scaling-demo
+kubectl delete namespace custom-metrics # If you only created it for this demo
+helm uninstall prometheus -n monitoring
+kubectl delete namespace monitoring # If you only created it for this demo
+```
+
+## Troubleshooting
+
+*   **Metrics Not Available:**
+    *   Verify that the Spring Boot Actuator is correctly configured and exposing the `/actuator/prometheus` endpoint.
+    *   Check Prometheus logs for errors related to scraping the application. Ensure Prometheus is configured to scrape the application pod.
+    *   Make sure the Prometheus Adapter is correctly configured and running. Check its logs for errors. Verify the `seriesQuery` in the Prometheus Adapter's configuration matches the actual Prometheus metric name.
+*   **HPA Not Scaling:**
+    *   Check the HPA's status using `kubectl describe hpa scaling-demo-hpa`. Look for events and messages indicating why the HPA is not scaling.
+    *   Verify that the metric name in the HPA definition matches the `asMatch` value in the Prometheus Adapter's configuration.
+    *   Ensure the Prometheus Adapter is properly configured and connected to Prometheus.
+    *   Confirm that the HPA is able to query the custom metric through the Prometheus Adapter.
+
+## Conclusion
+
+Auto-scaling based on custom metrics provides a powerful way to optimize your Spring Boot applications for performance and cost efficiency. By leveraging Kubernetes, Prometheus, and the Spring Boot Actuator, you can create a robust and responsive scaling solution that aligns with your specific business needs. Remember to choose metrics that truly reflect your application's performance and user experience, and carefully configure your Prometheus Adapter and HPA to ensure accurate and effective scaling.

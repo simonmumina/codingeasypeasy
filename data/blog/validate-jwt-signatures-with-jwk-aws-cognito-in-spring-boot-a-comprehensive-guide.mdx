@@ -1,0 +1,397 @@
+---
+title: "Validate JWT Signatures with JWK (AWS Cognito) in Spring Boot: A Comprehensive Guide"
+date: "2024-10-27"
+lastmod: "2024-10-27"
+tags: ["spring boot", "jwt", "jwk", "aws cognito", "security", "authentication", "authorization", "java", "token validation"]
+draft: false
+summary: "Learn how to securely validate JWT (JSON Web Token) signatures using JWK (JSON Web Key Set), specifically focusing on integration with AWS Cognito in a Spring Boot application.  This guide provides step-by-step instructions, code examples, and best practices for building robust authentication and authorization."
+authors: ["default"]
+---
+
+# Validate JWT Signatures with JWK (AWS Cognito) in Spring Boot: A Comprehensive Guide
+
+JSON Web Tokens (JWTs) are a standard for representing claims securely between two parties. In the context of web applications, they're commonly used for authentication and authorization.  When dealing with services like AWS Cognito, a common requirement is to validate the JWTs issued by Cognito within your backend application.  This validation process ensures the JWT is authentic and hasn't been tampered with.  This guide walks you through how to validate JWT signatures using JWK (JSON Web Key Set) in a Spring Boot application, specifically with AWS Cognito as the identity provider.
+
+## Understanding JWT, JWK, and AWS Cognito
+
+Before we dive into the code, let's briefly define these terms:
+
+*   **JWT (JSON Web Token):**  A compact, URL-safe means of representing claims to be transferred between two parties. JWTs are typically used for authentication and authorization.  They consist of three parts: a header, a payload, and a signature.
+*   **JWK (JSON Web Key Set):** A set of JSON Web Keys (JWKs) that contain the public keys used to verify the signatures of JWTs.  Identity providers like AWS Cognito expose their JWK set through a well-known URL (e.g., `.well-known/jwks.json`).
+*   **AWS Cognito:**  A fully managed identity provider service offered by Amazon Web Services (AWS).  It allows you to easily add user sign-up, sign-in, and access control to your web and mobile applications. Cognito issues JWTs upon successful user authentication.
+
+## Prerequisites
+
+*   Java Development Kit (JDK) 8 or later
+*   Maven or Gradle for dependency management
+*   An IDE of your choice (e.g., IntelliJ IDEA, Eclipse)
+*   An AWS account with an AWS Cognito User Pool configured
+*   Basic familiarity with Spring Boot and its concepts.
+
+## Step 1: Create a Spring Boot Project
+
+If you don't already have one, create a new Spring Boot project using Spring Initializr ([https://start.spring.io/](https://start.spring.io/)).  Make sure to include the following dependencies:
+
+*   Spring Web
+*   Spring Security
+*   `java.security` (likely already implicitly included)
+
+## Step 2: Add Dependencies
+
+Add the necessary dependencies to your `pom.xml` (Maven) or `build.gradle` (Gradle) file. We'll primarily need dependencies for JWT processing and JSON handling. While Spring Security provides some JWT support, for JWK fetching and handling, a dedicated library is often preferable.
+
+**Maven (pom.xml):**
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <!-- JWK parsing and JWT processing -->
+    <dependency>
+        <groupId>com.nimbusds</groupId>
+        <artifactId>nimbus-jose-jwt</artifactId>
+        <version>9.37</version> <!-- Use the latest version -->
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.security</groupId>
+        <artifactId>spring-security-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+**Gradle (build.gradle):**
+
+```gradle
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+    // JWK parsing and JWT processing
+    implementation 'com.nimbusds:nimbus-jose-jwt:9.37' // Use the latest version
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.security:spring-security-test'
+}
+```
+
+Remember to replace `9.37` with the latest version of `nimbus-jose-jwt`.
+
+## Step 3: Configure AWS Cognito JWK URL
+
+You need to obtain the JWK URL for your AWS Cognito User Pool.  The URL follows this pattern:
+
+`https://cognito-idp.{region}.amazonaws.com/{userPoolId}/.well-known/jwks.json`
+
+Replace `{region}` with the AWS region your Cognito User Pool is located in (e.g., `us-east-1`). Replace `{userPoolId}` with the User Pool ID of your Cognito User Pool (e.g., `us-east-1_xxxxxxxxxx`).
+
+Store this URL in your `application.properties` or `application.yml` file:
+
+**application.properties:**
+
+```properties
+aws.cognito.jwk-url=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxxxxxxxxx/.well-known/jwks.json
+```
+
+**application.yml:**
+
+```yaml
+aws:
+  cognito:
+    jwk-url: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_xxxxxxxxxx/.well-known/jwks.json
+```
+
+## Step 4: Create a JWK Provider
+
+Now, create a component that retrieves and caches the JWK set from the Cognito endpoint. This is crucial for efficient JWT validation as you don't want to fetch the JWKs every time.
+
+```java
+import com.nimbusds.jose.jwk.JWKSet;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.net.URL;
+
+@Component
+public class JwkProvider {
+
+    @Value("${aws.cognito.jwk-url}")
+    private String jwkUrl;
+
+    private JWKSet jwkSet;
+
+    public JWKSet getJwkSet() throws Exception {
+        if (jwkSet == null) {
+            // Lazy initialization and caching
+            jwkSet = JWKSet.load(new URL(jwkUrl));
+        }
+        return jwkSet;
+    }
+
+    // Optional: Add a method to refresh the JWK set periodically
+    // This can be implemented using a ScheduledExecutorService or similar.
+    public void refreshJwkSet() throws Exception {
+        this.jwkSet = JWKSet.load(new URL(jwkUrl));
+    }
+}
+```
+
+This `JwkProvider` class:
+
+*   Injects the JWK URL from the `application.properties` file.
+*   Uses `JWKSet.load()` from the `nimbus-jose-jwt` library to fetch the JWK set from the URL.
+*   Caches the JWK set to avoid repeated network calls.
+*   Includes a `refreshJwkSet()` method (optional) to refresh the JWK set periodically, ensuring that you always have the latest keys.  You can schedule this method to run using `@Scheduled` annotation in Spring.
+
+## Step 5: Create a JWT Authentication Filter
+
+Create a Spring Security filter that intercepts incoming requests and validates the JWT in the `Authorization` header.  This filter will extract the JWT, validate its signature using the JWK set, and set the authentication context in Spring Security if the JWT is valid.
+
+```java
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSVerifier;
+import com.nimbusds.jose.crypto.RSASSAVerifier;
+import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+import java.text.ParseException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+@Component
+public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    @Autowired
+    private JwkProvider jwkProvider;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
+        Optional<String> jwt = getJwtFromRequest(request);
+
+        if (jwt.isPresent()) {
+            try {
+                if (validateJwtToken(jwt.get())) {
+                    setAuthenticationContext(jwt.get());
+                }
+            } catch (Exception e) {
+                logger.error("Could not set user authentication in security context", e);
+            }
+        }
+
+        filterChain.doFilter(request, response);
+    }
+
+    private Optional<String> getJwtFromRequest(HttpServletRequest request) {
+        String bearerToken = request.getHeader("Authorization");
+        if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
+            return Optional.of(bearerToken.substring(7));
+        }
+        return Optional.empty();
+    }
+
+    private boolean validateJwtToken(String token) throws Exception {
+        try {
+            SignedJWT signedJWT = SignedJWT.parse(token);
+
+            // 1. Get the Key ID (kid) from the header
+            String keyId = signedJWT.getHeader().getKeyID();
+
+            // 2. Retrieve the correct public key from the JWK set
+            JWK jwk = jwkProvider.getJwkSet().getKeyByKeyId(keyId);
+
+            if (jwk == null) {
+                logger.error("No matching key found for the key id used in the JWT");
+                return false;
+            }
+
+            // Ensure the key is an RSA key (Cognito uses RSA)
+            if (!(jwk instanceof RSAKey)) {
+                logger.error("Expected an RSA key but got " + jwk.getClass());
+                return false;
+            }
+
+            // 3. Create a verifier using the public key
+            JWSVerifier verifier = new RSASSAVerifier((RSAKey) jwk);
+
+            // 4. Verify the signature
+            return signedJWT.verify(verifier);
+
+
+        } catch (ParseException | JOSEException e) {
+            logger.error("Invalid JWT signature: {}", e.getMessage());
+            return false;
+        }
+    }
+
+
+    private void setAuthenticationContext(String token) throws ParseException {
+        SignedJWT signedJWT = SignedJWT.parse(token);
+        JWTClaimsSet claims = signedJWT.getJWTClaimsSet();
+
+        String username = claims.getSubject(); // Or a custom claim like "username"
+
+        List<GrantedAuthority> authorities = new ArrayList<>();
+        // Example: Extract roles from a claim (e.g., "cognito:groups")
+        if (claims.getClaim("cognito:groups") != null) {
+          List<String> groups = (List<String>) claims.getClaim("cognito:groups");
+          for (String group : groups) {
+            authorities.add(new SimpleGrantedAuthority("ROLE_" + group)); // Add ROLE_ prefix
+          }
+        }
+
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                username, null, authorities);
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+    }
+}
+```
+
+Explanation:
+
+*   **`getJwtFromRequest()`:**  Extracts the JWT from the `Authorization` header.
+*   **`validateJwtToken()`:** This is the core of the JWT validation process:
+    *   Parses the JWT using `SignedJWT.parse()`.
+    *   Gets the Key ID (`kid`) from the JWT header. The `kid` identifies which key in the JWK set was used to sign the JWT.
+    *   Retrieves the corresponding `JWK` (JSON Web Key) from the `JwkProvider` using the `kid`.
+    *   Checks if the key is an instance of `RSAKey` (as Cognito uses RSA).
+    *   Creates an `RSASSAVerifier` using the `RSAKey`.
+    *   Verifies the JWT signature using `signedJWT.verify(verifier)`.
+*   **`setAuthenticationContext()`:**  If the JWT is valid, this method:
+    *   Parses the JWT to extract claims using `signedJWT.getJWTClaimsSet()`.
+    *   Extracts the username (or a custom identifier) from the `sub` (subject) claim.  You might need to adjust this based on your Cognito configuration.
+    *   Optionally extracts roles from a claim (e.g.,  `cognito:groups`). Cognito often places user groups in this claim.  Important:  Prefix roles with `ROLE_` as required by Spring Security.
+    *   Creates a `UsernamePasswordAuthenticationToken` to represent the authenticated user.
+    *   Sets the `Authentication` object in the `SecurityContextHolder`, making the user authenticated for subsequent requests.
+
+## Step 6: Configure Spring Security
+
+Finally, configure Spring Security to use the JWT authentication filter.  Create a configuration class that extends `WebSecurityConfigurerAdapter` (or `WebSecurityConfiguration` in Spring Boot 3.0+) and overrides the `configure()` method.
+
+```java
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Autowired
+    private JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+                .csrf(AbstractHttpConfigurer::disable) // Disable CSRF for API
+                .sessionManagement(session -> session
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS) // Use stateless sessions for JWT
+                )
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/public/**").permitAll() // Allow public endpoints
+                        .anyRequest().authenticated() // Require authentication for all other endpoints
+                )
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class); // Add JWT filter
+
+        return http.build();
+    }
+
+}
+```
+
+Explanation:
+
+*   `@EnableWebSecurity`: Enables Spring Security's web security features.
+*   `@Configuration`: Indicates that this class is a Spring configuration class.
+*   `http.csrf().disable()`: Disables CSRF protection, which is generally safe for stateless APIs.  For stateful web applications, you should enable CSRF protection.
+*   `sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)`: Configures Spring Security to not create HTTP sessions. JWTs are self-contained, so sessions are not needed.
+*   `authorizeRequests()`: Configures authorization rules:
+    *   `/public/**` endpoints are allowed without authentication.
+    *   All other endpoints require authentication.
+*   `addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)`:  Adds the `JwtAuthenticationFilter` before the standard `UsernamePasswordAuthenticationFilter`. This ensures that JWT validation happens before any username/password-based authentication attempts.
+
+## Step 7: Create a Controller
+
+Create a simple controller to test the authentication.
+
+```java
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class HelloController {
+
+    @GetMapping("/hello")
+    public String hello() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        String username = authentication.getName(); // Get the username from JWT
+        return "Hello, " + username + "!";
+    }
+
+    @GetMapping("/public/anonymous")
+    public String anonymous() {
+        return "Hello, Anonymous!";
+    }
+}
+```
+
+## Step 8: Test Your Application
+
+1.  **Obtain a JWT from AWS Cognito:**  Use your configured Cognito User Pool to authenticate a user and obtain a valid JWT.  You can use the AWS CLI, the AWS SDK, or Cognito Hosted UI.
+2.  **Send a Request to Your API:** Send an HTTP request to the `/hello` endpoint with the JWT in the `Authorization` header (e.g., `Authorization: Bearer <your_jwt>`).
+3.  **Verify the Response:**  If the JWT is valid, you should receive a response like `Hello, <username>!`.
+4.  **Test the Public Endpoint:** Send a request to `/public/anonymous`.  You should receive "Hello, Anonymous!" without any authentication required.
+5. **Test with Invalid JWT:** Modify the JWT by changing some characters, or try using an expired token.  You should receive a `403 Forbidden` error or a similar unauthorized status code, as the JWT validation will fail.  Examine the logs for error messages from the `JwtAuthenticationFilter`.
+
+## Best Practices and Considerations
+
+*   **JWK Rotation:**  Identity providers like Cognito may periodically rotate their signing keys.  Implement a mechanism to refresh the JWK set regularly (e.g., using a scheduled task) to ensure that you are always using the latest keys.  The `refreshJwkSet()` method in the `JwkProvider` provides a starting point.
+*   **Error Handling:**  Implement robust error handling in the `JwtAuthenticationFilter` to gracefully handle invalid JWTs, network errors, and other potential issues.
+*   **Claim Validation:**  In addition to signature validation, you can also validate specific claims within the JWT, such as the `iss` (issuer), `aud` (audience), and `exp` (expiration) claims.  This adds an extra layer of security.  Consider implementing custom claim validators.
+*   **HTTPS:**  Always use HTTPS to protect the communication between your application and the identity provider (Cognito) and between the client and your application.
+*   **Logging:**  Use detailed logging to track JWT validation attempts and potential errors.
+*   **Token Expiration:**  JWTs have a limited lifespan.  Consider using shorter expiration times and providing mechanisms for token refresh.
+*   **Security Headers:**  Set appropriate security headers in your HTTP responses to protect against common web vulnerabilities.
+*   **Scalability:** If your application needs to handle a large number of requests, consider caching the validated JWTs to reduce the load on the validation process. However, be careful with caching sensitive data and ensure appropriate cache invalidation strategies.
+
+## Conclusion
+
+This guide has provided a comprehensive overview of how to validate JWT signatures using JWK in a Spring Boot application, specifically focusing on AWS Cognito. By following these steps and best practices, you can build secure and robust authentication and authorization mechanisms for your applications. Remember to adapt the code and configurations to your specific requirements and always prioritize security best practices.

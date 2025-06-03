@@ -1,0 +1,315 @@
+---
+title: 'Secure Spring Boot Actuator Endpoints in Production: A Comprehensive Guide'
+date: '2024-01-26'
+lastmod: '2024-01-26'
+tags: ['spring boot', 'actuator', 'security', 'production', 'authorization', 'authentication', 'spring security']
+draft: false
+summary: 'Learn how to secure your Spring Boot Actuator endpoints in production using Spring Security.  This guide covers authentication, authorization, and best practices for protecting sensitive application information and management capabilities.'
+authors: ['default']
+---
+
+# Secure Spring Boot Actuator Endpoints in Production: A Comprehensive Guide
+
+Spring Boot Actuator provides powerful features for monitoring and managing your application in production.  However, exposing these endpoints without proper security measures can be a significant risk, potentially allowing unauthorized access to sensitive information and control over your application. This guide provides a comprehensive overview of how to secure Actuator endpoints in a production Spring Boot application using Spring Security.
+
+## Why Secure Actuator Endpoints?
+
+Actuator endpoints offer insights into your application's health, metrics, environment, and more.  Without proper security, attackers could:
+
+*   **Access sensitive data:** Retrieve environment variables, configuration details, and potentially database credentials.
+*   **Modify application configuration:**  Change logging levels, refresh configurations, or even shut down the application.
+*   **Expose internal details:** Uncover information about your application's architecture and dependencies, making it easier to exploit vulnerabilities.
+
+Therefore, securing these endpoints is paramount for maintaining the integrity and security of your production environment.
+
+## Methods for Securing Actuator Endpoints
+
+Several approaches can be used to secure your Actuator endpoints. The most common and recommended method is leveraging Spring Security.
+
+### 1. Spring Security: The Recommended Approach
+
+Spring Security offers a robust and flexible framework for securing your entire application, including Actuator endpoints. Here's how to configure it:
+
+**a) Add Spring Security Dependency:**
+
+First, add the Spring Security dependency to your `pom.xml` (for Maven) or `build.gradle` (for Gradle):
+
+**Maven (pom.xml):**
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+```
+
+**Gradle (build.gradle):**
+
+```gradle
+implementation 'org.springframework.boot:spring-boot-starter-security'
+```
+
+**b) Configure Security Rules in `application.properties` or `application.yml`:**
+
+This is where you define authentication and authorization rules for your Actuator endpoints. A common strategy is to require authentication and authorize specific roles or users to access them.
+
+**application.properties:**
+
+```properties
+management.endpoints.web.exposure.include=*
+management.endpoints.web.base-path=/actuator
+management.endpoint.health.show-details=always
+
+# Security Configuration
+spring.security.user.name=actuator
+spring.security.user.password=your_secure_password
+spring.security.user.roles=ACTUATOR
+management.endpoint.health.roles=ACTUATOR
+```
+
+**application.yml:**
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*" # Expose all endpoints for now (configure more granularly later)
+      base-path: /actuator  # Customize the base path
+  endpoint:
+    health:
+      show-details: always #Show detail information for health endpoint
+security:
+  user:
+    name: actuator
+    password: your_secure_password
+    roles: ACTUATOR
+
+management:
+  endpoint:
+    health:
+      roles: ACTUATOR
+```
+
+**Explanation:**
+
+*   `management.endpoints.web.exposure.include=*`: This property (for demonstration purposes) exposes *all* Actuator endpoints via HTTP. **In production, you should be more selective and explicitly list only the endpoints you need to expose.** We will show a more secure configuration later.
+*   `management.endpoints.web.base-path=/actuator`:  This configures a common base path for all Actuator endpoints. This improves organization and provides a single point for security rules.
+*   `management.endpoint.health.show-details=always`: Shows detailed information within the health endpoint.
+*   `spring.security.user.name`, `spring.security.user.password`, `spring.security.user.roles`:  These properties define a simple in-memory user for accessing the Actuator endpoints. **Important:  In production, DO NOT use in-memory authentication. Use a proper authentication provider like LDAP, OAuth 2.0, or a database.**
+*   `management.endpoint.health.roles=ACTUATOR`:  Require the `ACTUATOR` role to access the health endpoint details.
+
+**c) Create a Custom WebSecurityConfigurerAdapter (Recommended for Fine-Grained Control):**
+
+For more complex scenarios and finer-grained control, it's best to create a custom `WebSecurityConfigurerAdapter`.  This allows you to configure specific security rules for different Actuator endpoints.
+
+```java
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+
+@Configuration
+@EnableWebSecurity
+public class ActuatorSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.authorizeRequests()
+            .antMatchers("/actuator/health").permitAll() // Allow unauthenticated access to /actuator/health
+            .antMatchers("/actuator/**").hasRole("ACTUATOR") // Require ACTUATOR role for other endpoints
+            .anyRequest().authenticated() // All other endpoints require authentication
+            .and()
+            .httpBasic(); // Use HTTP Basic authentication
+
+        http.csrf().disable(); // Disable CSRF for Actuator endpoints (consider if needed)
+    }
+
+    @Bean
+    public UserDetailsService userDetailsService() {
+        UserDetails user = User.withDefaultPasswordEncoder() //Don't use in production!
+            .username("actuator")
+            .password("your_secure_password")
+            .roles("ACTUATOR")
+            .build();
+        return new InMemoryUserDetailsManager(user);
+    }
+}
+```
+
+**Explanation:**
+
+*   `@EnableWebSecurity`:  Enables Spring Security.
+*   `WebSecurityConfigurerAdapter`:  Provides a base class for configuring Spring Security.
+*   `configure(HttpSecurity http)`:  This method configures the security rules:
+    *   `.antMatchers("/actuator/health").permitAll()`: Allows unauthenticated access to the `/actuator/health` endpoint.  This is often desirable for monitoring systems.
+    *   `.antMatchers("/actuator/**").hasRole("ACTUATOR")`:  Requires the `ACTUATOR` role for all other endpoints under `/actuator/`.
+    *   `.anyRequest().authenticated()`: Requires authentication for all other requests to the application.
+    *   `.httpBasic()`: Configures HTTP Basic authentication.
+    *   `.csrf().disable()`:  Disables CSRF protection.  For Actuator endpoints, this is often acceptable since they are typically accessed by internal systems or authenticated administrators.  However, consider the security implications carefully before disabling CSRF in a production environment.
+*   `userDetailsService()`:  Creates an in-memory user for authentication.  **Replace this with a real authentication provider in production!**  `withDefaultPasswordEncoder` should **never** be used in production.  Use a strong password encoder like `BCryptPasswordEncoder`.
+
+**Important Considerations for Spring Security:**
+
+*   **Authentication Provider:**  Replace the in-memory authentication with a robust authentication provider such as:
+    *   **LDAP (Lightweight Directory Access Protocol):** Integrate with your existing directory service for user authentication.
+    *   **OAuth 2.0 / OpenID Connect:**  Allow users to authenticate using external identity providers like Google, Facebook, or Microsoft.
+    *   **Database Authentication:** Store user credentials in a database and use Spring Security's `JdbcUserDetailsManager` or a custom `UserDetailsService` to retrieve them.
+
+*   **Password Encoding:**  **Never store passwords in plain text.** Use a strong password encoding algorithm like `BCryptPasswordEncoder` to hash and salt passwords.
+
+*   **Role-Based Access Control (RBAC):**  Define roles (e.g., `ACTUATOR`, `ADMIN`, `MONITOR`) and assign them to users based on their responsibilities.  Use these roles to control access to different Actuator endpoints.
+
+*   **Fine-Grained Authorization:**  For more complex scenarios, consider using Spring Security's expression-based access control (e.g., `@PreAuthorize`, `@PostAuthorize`) to define authorization rules based on specific conditions.
+
+### 2. Network-Level Security (Firewall)
+
+While Spring Security provides application-level security, you should also implement network-level security measures to restrict access to your Actuator endpoints:
+
+*   **Firewall Rules:** Configure your firewall to only allow access to the Actuator endpoints from trusted IP addresses or networks.  This is a crucial first line of defense against unauthorized access.
+*   **VPN (Virtual Private Network):** Require users to connect to a VPN before accessing the Actuator endpoints.  This adds an extra layer of security by encrypting the traffic and authenticating users before they can access the internal network.
+
+### 3.  Custom Management Context Path (Defense in Depth)
+
+Changing the default management context path adds a layer of obscurity which can help to deter casual attackers. It does not provide real security, but as part of defence in depth it is a good idea.
+
+```yaml
+management:
+  server:
+    port: 8081
+    servlet:
+      context-path: /management
+```
+
+This configures a custom context path for the management server separate from the application context.  This isolates management endpoints and simplifies security rules in some cases. You may also need to change the port if you wish to access both application and management server endpoints, as in this example.
+
+### 4. Disable Unnecessary Endpoints
+
+Only expose the Actuator endpoints that you actually need.  Disabling unnecessary endpoints reduces the attack surface.
+
+**application.properties:**
+
+```properties
+management.endpoint.shutdown.enabled=true # Enable shutdown endpoint if needed. Default is false.
+management.endpoints.web.exposure.include=health,info,metrics  # Only expose health, info and metrics
+```
+
+**application.yml:**
+
+```yaml
+management:
+  endpoint:
+    shutdown:
+      enabled: true  # Enable shutdown endpoint if needed. Default is false.
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics # Only expose health, info and metrics
+```
+
+This configuration only exposes the `health`, `info`, and `metrics` endpoints.  Remember to carefully consider which endpoints are necessary for your monitoring and management needs.
+
+## Best Practices
+
+*   **Don't rely on default settings:** Always configure security explicitly, even if the default settings seem secure enough.
+*   **Use a strong authentication provider:**  Replace in-memory authentication with a robust provider like LDAP or OAuth 2.0.
+*   **Use a strong password encoder:**  Never store passwords in plain text.  Use a strong algorithm like `BCryptPasswordEncoder`.
+*   **Implement Role-Based Access Control (RBAC):** Define roles and assign them to users based on their responsibilities.
+*   **Apply network-level security:** Use firewalls and VPNs to restrict access to the Actuator endpoints.
+*   **Monitor access to Actuator endpoints:**  Log access attempts and monitor for suspicious activity.
+*   **Regularly review your security configuration:**  As your application evolves, ensure your security configuration remains up-to-date and effective.
+*   **Principle of Least Privilege:** Grant only the minimum necessary permissions to each user or role.
+*   **Keep dependencies updated:** Regularly update your Spring Boot and Spring Security dependencies to patch any security vulnerabilities.
+
+## Example: Secure Configuration (application.yml)
+
+This example shows a more secure configuration for a production environment.
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: when-authorized # or never
+
+spring:
+  security:
+    user:
+      name: actuator
+      password: ${ACTUATOR_PASSWORD} # From environment variable
+      roles: ACTUATOR
+
+# Custom security configuration (ActuatorSecurityConfig.java)
+```
+
+**ActuatorSecurityConfig.java:**
+
+```java
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+
+@Configuration
+@EnableWebSecurity
+public class ActuatorSecurityConfig extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http.authorizeRequests()
+            .antMatchers("/actuator/health").permitAll()
+            .antMatchers("/actuator/**").hasRole("ACTUATOR")
+            .anyRequest().authenticated()
+            .and()
+            .httpBasic();
+
+        http.csrf().disable();
+    }
+
+    @Bean
+    public UserDetailsService userDetailsService() {
+        UserDetails user = User.builder()
+            .username("actuator")
+            .password(passwordEncoder().encode(System.getenv("ACTUATOR_PASSWORD"))) // Get password from env var
+            .roles("ACTUATOR")
+            .build();
+
+        return new InMemoryUserDetailsManager(user);
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+}
+```
+
+**Explanation of the secure configuration:**
+
+*   **Limited Exposure:** Only `health`, `info`, and `metrics` are exposed.
+*   **Environment Variable for Password:** The password for the `actuator` user is read from an environment variable (`ACTUATOR_PASSWORD`). This is much more secure than hardcoding the password in the configuration file.
+*   **`BCryptPasswordEncoder`:** We are using `BCryptPasswordEncoder` which is a strong password encoder.
+*   **`health.show-details: when-authorized`**:  This means that details are shown only to authenticated and authorized users. An alternative more secure option is never showing details i.e. `health.show-details: never`.
+*   **Role-Based Access Control:**  The `ACTUATOR` role is required to access all actuator endpoints other than `/health`.
+*   **Custom UserDetailsService and PasswordEncoder**: A custom implementation of the `UserDetailsService` is defined, allowing for user details to be loaded from an external source (in this case, hardcoded, but it could be a database or LDAP).  A `PasswordEncoder` bean is also created to encode passwords before they are stored.
+
+## Conclusion
+
+Securing your Spring Boot Actuator endpoints in production is crucial for protecting sensitive application data and maintaining control over your application. By implementing the methods and best practices outlined in this guide, you can significantly reduce the risk of unauthorized access and ensure the security of your production environment. Remember to prioritize strong authentication, fine-grained authorization, and network-level security measures to create a robust defense against potential threats. Always thoroughly test your security configuration to ensure it meets your specific requirements.

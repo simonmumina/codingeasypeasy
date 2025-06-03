@@ -1,0 +1,792 @@
+---
+title: 'Implementing OAuth2 Authentication in Pyramid: A Comprehensive Guide'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags: ['Pyramid', 'Python', 'OAuth2', 'Authentication', 'Authorization', 'Security', 'Web Development', 'Web Security']
+draft: false
+summary: 'Learn how to implement OAuth2 authentication in your Pyramid web applications with this detailed guide. Includes code examples and best practices for securing your API and protecting user data.'
+authors: ['default']
+---
+
+# Implementing OAuth2 Authentication in Pyramid: A Comprehensive Guide
+
+OAuth2 is a powerful authorization framework that allows users to grant third-party applications limited access to their resources without sharing their credentials. In this guide, we'll walk through the process of implementing OAuth2 authentication in a Pyramid web application. We'll cover everything from setting up the necessary libraries to creating authorization and token endpoints.
+
+## What is OAuth2 and Why Use It?
+
+OAuth2 (Open Authorization) is an authorization protocol that enables third-party applications to access user resources on another service without needing the user's username and password.  Instead, OAuth2 provides the third-party application with an access token, which acts as a temporary credential.
+
+Here's why you should consider using OAuth2:
+
+*   **Security:** Users don't have to share their credentials with third-party applications, reducing the risk of compromised accounts.
+*   **Granular Access Control:** Users can grant specific permissions to applications, controlling what data they can access.
+*   **Delegation:**  OAuth2 allows applications to act on behalf of a user without directly using the user's credentials.
+*   **Standardized Protocol:**  OAuth2 is a widely adopted standard, providing interoperability between different services and platforms.
+
+## Prerequisites
+
+Before we begin, make sure you have the following installed:
+
+*   **Python:** Python 3.7 or later is recommended.
+*   **pip:** Python's package installer.
+*   **virtualenv:** A tool for creating isolated Python environments.
+
+## Setting Up a Pyramid Project
+
+Let's create a new Pyramid project.  First, create a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate  # On Linux/macOS
+.venv\Scripts\activate    # On Windows
+```
+
+Now, install Pyramid and other necessary dependencies:
+
+```bash
+pip install pyramid pyramid_tm sqlalchemy psycopg2-binary passlib  # psycopg2-binary for PostgreSQL
+```
+
+Create a basic Pyramid project using `pcreate`:
+
+```bash
+pcreate -s alchemy oauth2_pyramid
+cd oauth2_pyramid
+```
+
+This creates a project named `oauth2_pyramid` using SQLAlchemy for database interactions. The `-s alchemy` flag includes SQLAlchemy integration.
+
+## Database Setup
+
+We need a database to store OAuth2 client and token information.  For this example, we'll use PostgreSQL, but you can adapt the code to use other databases like SQLite or MySQL.
+
+1.  **Create a Database:**
+
+    Create a PostgreSQL database named `oauth2_db`:
+
+    ```bash
+    createdb oauth2_db
+    ```
+
+2.  **Configure Database Connection:**
+
+    Modify the `development.ini` file in your project to point to the PostgreSQL database. Find the `sqlalchemy.url` setting and update it:
+
+    ```ini
+    sqlalchemy.url = postgresql://username:password@localhost:5432/oauth2_db
+    ```
+
+    Replace `username` and `password` with your PostgreSQL username and password.
+
+## Defining Database Models
+
+We'll create SQLAlchemy models for clients, users, and tokens.  Edit `oauth2_pyramid/models.py`:
+
+```python
+import datetime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    DateTime,
+    ForeignKey
+)
+from sqlalchemy.orm import relationship
+from sqlalchemy.ext.declarative import declarative_base
+from passlib.hash import pbkdf2_sha256
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+
+    def set_password(self, password):
+        self.password = pbkdf2_sha256.hash(password)
+
+    def check_password(self, password):
+        return pbkdf2_sha256.verify(password, self.password)
+
+
+class Client(Base):
+    __tablename__ = 'clients'
+    id = Column(Integer, primary_key=True)
+    client_id = Column(String(40), unique=True, nullable=False)  # OAuth2 client_id
+    client_secret = Column(String(55), nullable=False) # OAuth2 client_secret
+    redirect_uri = Column(String(255), nullable=False)  # Redirect URI after authorization
+    user_id = Column(Integer, ForeignKey('users.id'))
+    user = relationship("User", backref="clients")
+    name = Column(String(255))
+
+class Token(Base):
+    __tablename__ = 'tokens'
+    id = Column(Integer, primary_key=True)
+    access_token = Column(String(255), unique=True, nullable=False)
+    refresh_token = Column(String(255), unique=True) # Optional Refresh Token
+    expires_at = Column(DateTime, nullable=False)
+    client_id = Column(String(40), ForeignKey('clients.client_id'))
+    client = relationship("Client", backref="tokens")
+    user_id = Column(Integer, ForeignKey('users.id'))
+    user = relationship("User")
+
+```
+
+**Explanation:**
+
+*   **User:** Stores user information, including a username and password (hashed using `passlib`).
+*   **Client:** Represents an OAuth2 client.  It stores the `client_id`, `client_secret`, `redirect_uri`, and a relationship to the user who owns the client.
+*   **Token:** Represents an OAuth2 token. It stores the `access_token`, `refresh_token` (optional), expiration time, and relationships to the client and user. We are using a `refresh_token` for persistent tokens.
+
+## Creating Database Tables
+
+Modify the `oauth2_pyramid/__init__.py` file to create the tables on application startup:
+
+```python
+import os
+from pyramid.config import Configurator
+from sqlalchemy import engine_from_config
+from .models import (
+    DBSession,
+    Base,
+)
+
+def main(global_config, **settings):
+    """ This function returns a Pyramid WSGI application.
+    """
+    engine = engine_from_config(settings, 'sqlalchemy.')
+    DBSession.configure(bind=engine)
+    Base.metadata.create_all(engine)  # Create the tables
+    config = Configurator(settings=settings)
+    config.include('pyramid_tm')
+    config.include('pyramid_jinja2')
+    config.include('.routes')
+    config.scan()
+    return config.make_wsgi_app()
+```
+
+Now, run the application to create the tables.
+
+```bash
+pserve development.ini
+```
+
+You only need to run `pserve` once to create the tables.  You can stop the server after that.
+
+## Creating User and Client Endpoints (Views)
+
+Let's create views for user registration and client creation.  We'll add these to the `oauth2_pyramid/views.py` file.
+
+```python
+from pyramid.view import view_config
+from pyramid.response import Response
+from pyramid.security import remember, forget
+from sqlalchemy.exc import IntegrityError
+from .models import DBSession, User, Client
+from pyramid.httpexceptions import HTTPFound
+import uuid
+from pyramid.view import forbidden_view_config
+
+# Example error handling (replace with appropriate logging)
+import logging
+log = logging.getLogger(__name__)
+
+
+@view_config(route_name='register', renderer='templates/register.jinja2')
+def register_view(request):
+    if request.method == 'POST':
+        username = request.params.get('username')
+        password = request.params.get('password')
+
+        user = User(username=username)
+        user.set_password(password)
+
+        try:
+            DBSession.add(user)
+            DBSession.flush()  # Flush to get the user.id
+            headers = remember(request, user.id)
+            return HTTPFound(location=request.route_url('home'), headers=headers)
+        except IntegrityError:
+            request.session.flash('Username already exists.')
+            return {'error': 'Username already exists'}
+    return {}
+
+@view_config(route_name='login', renderer='templates/login.jinja2')
+def login_view(request):
+    if request.method == 'POST':
+        username = request.params.get('username')
+        password = request.params.get('password')
+        user = DBSession.query(User).filter_by(username=username).first()
+        if user and user.check_password(password):
+            headers = remember(request, user.id)
+            return HTTPFound(location=request.route_url('home'), headers=headers)
+        else:
+            request.session.flash('Invalid username or password.')
+            return {'error': 'Invalid username or password'}
+    return {}
+
+
+@view_config(route_name='logout')
+def logout_view(request):
+    headers = forget(request)
+    return HTTPFound(location=request.route_url('home'), headers=headers)
+
+
+@view_config(route_name='create_client', renderer='templates/create_client.jinja2', permission='view')
+def create_client_view(request):
+    if request.method == 'POST':
+        name = request.params.get('name')
+        redirect_uri = request.params.get('redirect_uri')
+        client_id = str(uuid.uuid4())
+        client_secret = str(uuid.uuid4())  # Consider a more robust secret generation
+
+        client = Client(
+            name=name,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            user_id=request.authenticated_userid # The currently logged in user
+        )
+        DBSession.add(client)
+        return HTTPFound(location=request.route_url('home'))
+    return {}
+
+
+@view_config(route_name='home', renderer='templates/home.jinja2', permission='view')
+def home_view(request):
+    clients = DBSession.query(Client).filter_by(user_id=request.authenticated_userid).all()
+    return {'clients': clients}
+
+
+@forbidden_view_config(renderer='templates/forbidden.jinja2')
+def forbidden_view(request):
+    return {}
+```
+
+**Explanation:**
+
+*   **register_view:** Handles user registration.  It hashes the password before saving it to the database using `passlib`.  After successful registration, it uses `remember` to set a cookie for the user's session.
+*   **login_view:** Handles user login.  It verifies the password using `passlib` and uses `remember` to set a cookie for the user's session.
+*   **logout_view:** Handles user logout.  It uses `forget` to remove the user's session cookie.
+*   **create_client_view:** Creates a new OAuth2 client.  It generates a `client_id` and `client_secret` (using `uuid` for simplicity; consider a more secure secret generation method in production) and stores them in the database. It links the client to the currently logged-in user.
+*   **home_view:** Displays the clients associated with the logged-in user. It uses the `request.authenticated_userid` to filter the clients.
+*   **forbidden_view:**  Handles forbidden access (403 errors).
+
+## Routing Configuration
+
+Now, let's configure the routes in `oauth2_pyramid/routes.py`:
+
+```python
+def includeme(config):
+    config.add_route('home', '/')
+    config.add_route('register', '/register')
+    config.add_route('login', '/login')
+    config.add_route('logout', '/logout')
+    config.add_route('create_client', '/create_client')
+    config.add_static_view('static', 'static', cache_max_age=3600)
+    config.add_route('authorization', '/oauth2/authorize')
+    config.add_route('token', '/oauth2/token')
+```
+
+We've added routes for registration, login, client creation, authorization, and token endpoints.  The `authorization` and `token` routes are for the OAuth2 flow.
+
+## Authentication and Authorization Policy
+
+We'll use Pyramid's built-in authentication and authorization policies. Edit `oauth2_pyramid/__init__.py` to configure them:
+
+```python
+import os
+from pyramid.config import Configurator
+from sqlalchemy import engine_from_config
+
+from .models import (
+    DBSession,
+    Base,
+)
+
+from pyramid.authentication import AuthTktAuthenticationPolicy
+from pyramid.authorization import ACLAuthorizationPolicy
+
+def get_user(request):
+    user_id = request.unauthenticated_userid
+    if user_id is not None:
+        return DBSession.query(User).get(user_id)
+    return None
+
+
+def main(global_config, **settings):
+    """ This function returns a Pyramid WSGI application.
+    """
+    engine = engine_from_config(settings, 'sqlalchemy.')
+    DBSession.configure(bind=engine)
+    Base.metadata.create_all(engine)
+    authentication_policy = AuthTktAuthenticationPolicy(
+        settings['auth.secret'],
+        callback=get_user,
+        hashalg='sha512'  # Stronger hashing
+    )
+    authorization_policy = ACLAuthorizationPolicy()
+    config = Configurator(settings=settings,
+                          root_factory='oauth2_pyramid.models.RootFactory',
+                          authentication_policy=authentication_policy,
+                          authorization_policy=authorization_policy)
+    config.include('pyramid_tm')
+    config.include('pyramid_jinja2')
+    config.include('.routes')
+    config.scan()
+    config.add_request_method(get_user, 'user', reify=True) # add user object to the request
+
+    return config.make_wsgi_app()
+```
+
+We have included an `AuthTktAuthenticationPolicy` and an `ACLAuthorizationPolicy`.  The `AuthTktAuthenticationPolicy` uses a cookie to store the user's ID.  We also need to define a `get_user` function to retrieve the user object from the database based on the user ID in the cookie. We attach this function to the request object with `config.add_request_method` to easily access the user throughout our app. Finally, we specify a root factory to enable authorization. Let's create the root factory `oauth2_pyramid/models.py`:
+
+```python
+import datetime
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    DateTime,
+    ForeignKey
+)
+from sqlalchemy.orm import relationship
+from sqlalchemy.ext.declarative import declarative_base
+from passlib.hash import pbkdf2_sha256
+from pyramid.security import Allow, Everyone
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String(255), unique=True, nullable=False)
+    password = Column(String(255), nullable=False)
+
+    def set_password(self, password):
+        self.password = pbkdf2_sha256.hash(password)
+
+    def check_password(self, password):
+        return pbkdf2_sha256.verify(password, self.password)
+
+
+class Client(Base):
+    __tablename__ = 'clients'
+    id = Column(Integer, primary_key=True)
+    client_id = Column(String(40), unique=True, nullable=False)  # OAuth2 client_id
+    client_secret = Column(String(55), nullable=False) # OAuth2 client_secret
+    redirect_uri = Column(String(255), nullable=False)  # Redirect URI after authorization
+    user_id = Column(Integer, ForeignKey('users.id'))
+    user = relationship("User", backref="clients")
+    name = Column(String(255))
+
+class Token(Base):
+    __tablename__ = 'tokens'
+    id = Column(Integer, primary_key=True)
+    access_token = Column(String(255), unique=True, nullable=False)
+    refresh_token = Column(String(255), unique=True) # Optional Refresh Token
+    expires_at = Column(DateTime, nullable=False)
+    client_id = Column(String(40), ForeignKey('clients.client_id'))
+    client = relationship("Client", backref="tokens")
+    user_id = Column(Integer, ForeignKey('users.id'))
+    user = relationship("User")
+
+
+class RootFactory(object):
+    __acl__ = [ (Allow, Everyone, 'view') ]
+    def __init__(self, request):
+        pass
+
+```
+
+**Important:**
+
+*   Replace `settings['auth.secret']` in `development.ini` with a strong, randomly generated secret. This is crucial for security.
+
+```ini
+auth.secret = your_very_secret_key
+```
+
+## Creating the Authorization Endpoint
+
+The authorization endpoint is responsible for obtaining user consent and issuing an authorization code. Add the following view to `oauth2_pyramid/views.py`:
+
+```python
+from pyramid.view import view_config
+from pyramid.response import Response
+from pyramid.security import remember, forget
+from sqlalchemy.exc import IntegrityError
+from .models import DBSession, User, Client, Token
+from pyramid.httpexceptions import HTTPFound, HTTPBadRequest
+import uuid
+import datetime
+from pyramid.view import forbidden_view_config
+from urllib.parse import urlencode
+
+# Example error handling (replace with appropriate logging)
+import logging
+log = logging.getLogger(__name__)
+
+
+@view_config(route_name='authorization', renderer='templates/authorize.jinja2', request_method='GET')
+def authorization_view(request):
+    client_id = request.params.get('client_id')
+    redirect_uri = request.params.get('redirect_uri')
+    response_type = request.params.get('response_type')
+
+    if not client_id or not redirect_uri or not response_type:
+        return HTTPBadRequest("Missing parameters")
+
+    client = DBSession.query(Client).filter_by(client_id=client_id).first()
+
+    if not client or client.redirect_uri != redirect_uri:
+        return HTTPBadRequest("Invalid client_id or redirect_uri")
+
+    # Check if the user is logged in.
+    if not request.user:
+         # Store the original request URL in the session
+        request.session['oauth2_redirect_uri'] = request.url
+        return HTTPFound(location=request.route_url('login'))
+
+    # If the user is logged in, show the authorization page
+    return {'client': client, 'redirect_uri': redirect_uri}
+
+@view_config(route_name='authorization', renderer='templates/authorize.jinja2', request_method='POST')
+def authorization_approval_view(request):
+    if 'allow' in request.params:  # User approved access
+        client_id = request.params.get('client_id')
+        redirect_uri = request.params.get('redirect_uri')
+        client = DBSession.query(Client).filter_by(client_id=client_id).first()
+
+        # Generate authorization code.  In a real app, use a cryptographically secure method.
+        authorization_code = str(uuid.uuid4())
+        redirect_params = {'code': authorization_code, 'state': request.params.get('state')}  #Include state if provided
+
+        #Store Authorization code in the database (you will want to store user_id and expiration too)
+        #This example avoids that to remain relatively small.
+
+        redirect_url = redirect_uri + '?' + urlencode(redirect_params)
+        return HTTPFound(location=redirect_url)
+    else:  # User denied access
+        redirect_uri = request.params.get('redirect_uri')
+        error_params = {'error': 'access_denied', 'state': request.params.get('state')} #include state if provided
+        redirect_url = redirect_uri + '?' + urlencode(error_params)
+        return HTTPFound(location=redirect_url)
+```
+
+**Explanation:**
+
+1.  **GET Request:**
+
+    *   Retrieves `client_id`, `redirect_uri`, and `response_type` from the request parameters.
+    *   Validates the `client_id` and `redirect_uri` against the database.
+    *   If the user is not logged in, it redirects them to the login page, storing the original URL in the session to redirect back after login.
+    *   If the user is logged in and the client is valid, it renders the `authorize.jinja2` template, prompting the user to grant or deny access.  It passes the client information to the template.
+
+2.  **POST Request:**
+
+    *   Checks if the user approved or denied access.
+    *   If approved, it generates an authorization code (using `uuid.uuid4()` for simplicity).  **Important:** In a production environment, you should use a cryptographically secure random number generator for authorization codes.
+    *   Constructs the redirect URL with the authorization code and `state` (if provided) as query parameters.
+    *   **Missing from Example:**  The authorization code should be stored in the database, associated with the user, client, and an expiration time.
+    *   If denied, it constructs the redirect URL with an `error=access_denied` parameter and `state` (if provided).
+
+## Creating the Token Endpoint
+
+The token endpoint is responsible for exchanging the authorization code for an access token. Add the following view to `oauth2_pyramid/views.py`:
+
+```python
+from pyramid.view import view_config
+from pyramid.response import Response
+from pyramid.security import remember, forget
+from sqlalchemy.exc import IntegrityError
+from .models import DBSession, User, Client, Token
+from pyramid.httpexceptions import HTTPFound, HTTPBadRequest
+import uuid
+import datetime
+from pyramid.view import forbidden_view_config
+from urllib.parse import urlencode
+import json
+
+# Example error handling (replace with appropriate logging)
+import logging
+log = logging.getLogger(__name__)
+
+
+@view_config(route_name='token', renderer='json', request_method='POST')
+def token_view(request):
+    grant_type = request.params.get('grant_type')
+    code = request.params.get('code')
+    redirect_uri = request.params.get('redirect_uri')
+    client_id = request.params.get('client_id')
+    client_secret = request.params.get('client_secret')
+
+    if not grant_type or not code or not redirect_uri or not client_id or not client_secret:
+        return HTTPBadRequest("Missing parameters")
+
+    if grant_type != 'authorization_code':
+        return HTTPBadRequest("Unsupported grant_type")
+
+    client = DBSession.query(Client).filter_by(client_id=client_id).first()
+
+    if not client or client.client_secret != client_secret or client.redirect_uri != redirect_uri:
+        return HTTPBadRequest("Invalid client credentials or redirect_uri")
+
+    #Check Authorization Code (in a real app, this would include checking if it's expired.)
+    #Here we simulate the check as we have not stored the code
+
+    # Generate access token and refresh token (in a real app, use a cryptographically secure method).
+    access_token = str(uuid.uuid4())
+    refresh_token = str(uuid.uuid4())
+
+    #Set expiration time (e.g. 1 hour)
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+
+    token = Token(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+        client=client,
+        user=client.user #Associate the token with the user
+    )
+
+    DBSession.add(token)
+
+    return {
+        'access_token': access_token,
+        'token_type': 'bearer',
+        'expires_in': 3600, #Expiration time in seconds
+        'refresh_token': refresh_token
+    }
+```
+
+**Explanation:**
+
+1.  Retrieves `grant_type`, `code`, `redirect_uri`, `client_id`, and `client_secret` from the request parameters.
+2.  Validates the `grant_type` (must be `authorization_code`) and the client credentials (`client_id`, `client_secret`, and `redirect_uri`).
+3.  **Missing:**  The code should be verified against the database to ensure it exists, hasn't been used, and hasn't expired.  The code should be deleted from the database after a successful token exchange.
+4.  Generates an access token and refresh token (using `uuid.uuid4()` for simplicity). **Important:**  In a production environment, you should use a cryptographically secure random number generator for tokens.
+5.  Creates a `Token` object, storing the access token, refresh token, expiration time, client, and user in the database.
+6.  Returns a JSON response containing the `access_token`, `token_type`, `expires_in` (in seconds), and `refresh_token`.
+
+## Creating Templates
+
+Create the following Jinja2 templates in the `oauth2_pyramid/templates` directory:
+
+*   **register.jinja2:**
+
+    ```html
+    <form action="{{ request.route_url('register') }}" method="post">
+        <label>Username:</label>
+        <input type="text" name="username" required><br>
+        <label>Password:</label>
+        <input type="password" name="password" required><br>
+        <button type="submit">Register</button>
+        {% if error %}
+            <p style="color:red">{{ error }}</p>
+        {% endif %}
+    </form>
+    ```
+
+*   **login.jinja2:**
+
+    ```html
+    <form action="{{ request.route_url('login') }}" method="post">
+        <label>Username:</label>
+        <input type="text" name="username" required><br>
+        <label>Password:</label>
+        <input type="password" name="password" required><br>
+        <button type="submit">Login</button>
+        {% if error %}
+            <p style="color:red">{{ error }}</p>
+        {% endif %}
+    </form>
+    {% if request.session.flash %}
+        <p style="color:red">{{ request.session.flash[0] }}</p>
+    {% endif %}
+    ```
+
+*   **home.jinja2:**
+
+    ```html
+    {% if request.user %}
+        <p>Logged in as {{ request.user.username }}</p>
+        <a href="{{ request.route_url('logout') }}">Logout</a>
+        <a href="{{ request.route_url('create_client') }}">Create Client</a>
+
+        <h2>Your Clients</h2>
+        <ul>
+            {% for client in clients %}
+                <li>{{ client.name }} (Client ID: {{ client.client_id }})</li>
+            {% endfor %}
+        </ul>
+    {% else %}
+        <p>Not logged in. <a href="{{ request.route_url('login') }}">Login</a> or <a href="{{ request.route_url('register') }}">Register</a></p>
+    {% endif %}
+    ```
+
+*   **create_client.jinja2:**
+
+    ```html
+    <form action="{{ request.route_url('create_client') }}" method="post">
+        <label>Client Name:</label>
+        <input type="text" name="name" required><br>
+        <label>Redirect URI:</label>
+        <input type="url" name="redirect_uri" required><br>
+        <button type="submit">Create Client</button>
+    </form>
+    ```
+
+*   **authorize.jinja2:**
+
+    ```html
+    {% if request.user %}
+        <p>Logged in as {{ request.user.username }}</p>
+        <p>The application <b>{{ client.name }}</b> is requesting access to your account.</p>
+        <form action="{{ request.route_url('authorization') }}" method="post">
+            <input type="hidden" name="client_id" value="{{ client.client_id }}">
+            <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+            <input type="hidden" name="state" value="{{ request.params.get('state') }}">
+            <button type="submit" name="allow" value="true">Allow</button>
+            <button type="submit" name="deny" value="true">Deny</button>
+        </form>
+    {% else %}
+        <p>Please login to authorize the application.</p>
+        <a href="{{ request.route_url('login') }}">Login</a>
+    {% endif %}
+    ```
+
+*   **forbidden.jinja2:**
+
+    ```html
+    <h1>Forbidden</h1>
+    <p>You do not have permission to access this page.</p>
+    ```
+
+## Testing the OAuth2 Flow
+
+1.  **Start the Pyramid application:**
+
+    ```bash
+    pserve development.ini
+    ```
+
+2.  **Register a user:**  Visit `http://localhost:6543/register` and create a new user account.
+
+3.  **Login:** Visit `http://localhost:6543/login` and log in with the newly created user account.
+
+4.  **Create a client:**  Visit `http://localhost:6543/create_client` and create a new OAuth2 client.  Enter a client name and a redirect URI (e.g., `http://localhost:8000/callback`).  The redirect URI is where the authorization server will redirect the user after they grant or deny access.
+
+5.  **Construct the authorization URL:**
+
+    Build the authorization URL with the following parameters:
+
+    *   `client_id`: The `client_id` of the client you just created.
+    *   `redirect_uri`: The redirect URI you specified when creating the client.
+    *   `response_type`: `code` (for the authorization code grant type).
+    *   `state`: (Optional)  A string that will be returned to the client in the redirect URI.  Used to prevent CSRF attacks.
+
+    Example:
+
+    ```
+    http://localhost:6543/oauth2/authorize?client_id=your_client_id&redirect_uri=http://localhost:8000/callback&response_type=code&state=your_state
+    ```
+
+    Replace `your_client_id` with the actual client ID.
+
+6.  **Visit the authorization URL:**  Open the authorization URL in your browser.  You should be prompted to grant or deny access to the client application.  If not logged in, you will be redirected to the login page.
+
+7.  **Grant access:** Click the "Allow" button.  You should be redirected to the redirect URI with the authorization code and state (if provided) as query parameters.
+
+    Example:
+
+    ```
+    http://localhost:8000/callback?code=authorization_code&state=your_state
+    ```
+
+    Replace `authorization_code` with the actual authorization code.
+
+8.  **Exchange the authorization code for an access token:**
+
+    Send a POST request to the token endpoint (`http://localhost:6543/oauth2/token`) with the following parameters:
+
+    *   `grant_type`: `authorization_code`.
+    *   `code`: The authorization code you received in the redirect URI.
+    *   `redirect_uri`: The redirect URI you specified when creating the client.
+    *   `client_id`: The `client_id` of the client you created.
+    *   `client_secret`: The `client_secret` of the client you created.
+
+    You can use `curl` or a similar tool to send the request:
+
+    ```bash
+    curl -X POST \
+      http://localhost:6543/oauth2/token \
+      -d 'grant_type=authorization_code' \
+      -d 'code=authorization_code' \
+      -d 'redirect_uri=http://localhost:8000/callback' \
+      -d 'client_id=your_client_id' \
+      -d 'client_secret=your_client_secret'
+    ```
+
+    Replace `authorization_code`, `your_client_id`, and `your_client_secret` with the actual values.
+
+    The response should be a JSON object containing the access token, token type, expiration time, and refresh token:
+
+    ```json
+    {
+      "access_token": "your_access_token",
+      "token_type": "bearer",
+      "expires_in": 3600,
+      "refresh_token": "your_refresh_token"
+    }
+    ```
+
+## Securing API Endpoints
+
+Now that you have an access token, you can use it to secure your API endpoints.  Here's a basic example of how to validate the access token in a Pyramid view:
+
+```python
+from pyramid.view import view_config
+from .models import DBSession, Token
+from pyramid.httpexceptions import HTTPUnauthorized
+
+@view_config(route_name='api_resource', renderer='json', permission='view') #requires permission for access
+def api_resource_view(request):
+    authorization_header = request.headers.get('Authorization')
+
+    if not authorization_header:
+        raise HTTPUnauthorized("Missing Authorization header")
+
+    try:
+        token_type, access_token = authorization_header.split(' ')
+        if token_type.lower() != 'bearer':
+            raise HTTPUnauthorized("Invalid token type")
+    except ValueError:
+        raise HTTPUnauthorized("Invalid Authorization header format")
+
+    token = DBSession.query(Token).filter_by(access_token=access_token).first()
+
+    if not token or token.expires_at < datetime.datetime.utcnow():
+        raise HTTPUnauthorized("Invalid or expired access token")
+
+    # Access token is valid, grant access to the resource
+    return {'message': 'Successfully accessed the API resource', 'user_id': token.user_id}
+```
+
+**Explanation:**
+
+1.  Retrieves the `Authorization` header from the request.
+2.  Validates the header format and token type (must be "Bearer").
+3.  Queries the database for a `Token` object matching the access token.
+4.  Checks if the token exists and hasn't expired.
+5.  If the token is valid, it grants access to the resource.
+
+## Adding a Route for the API Resource
+
+Add the `api_resource` route to `oauth2_pyramid/routes.py`:
+
+```python
+def includeme(config):
+    config.add_route('home', '/')
+    config.add_route('register', '/register')

@@ -1,0 +1,360 @@
+---
+title: 'Logging SQL Queries with Parameters in Production Spring Boot: A Comprehensive Guide'
+date: '2024-10-26'
+lastmod: '2024-10-26'
+tags: ['spring boot', 'sql logging', 'production logging', 'jdbc', 'aop', 'interceptor', 'query logging', 'java', 'database']
+draft: false
+summary: 'Learn how to effectively log all SQL queries, including parameters, in your production Spring Boot application. This guide covers multiple methods to achieve detailed and insightful SQL logging without compromising performance or security.'
+authors: ['default']
+---
+
+Logging SQL queries in a Spring Boot application, especially in a production environment, is crucial for debugging, performance analysis, and security auditing.  Seeing the exact queries executed, along with the parameters used, can significantly speed up issue resolution and help identify potential security vulnerabilities like SQL injection. However, enabling full SQL logging can also have a performance impact and expose sensitive data if not handled carefully. This article explores several robust and practical methods for logging SQL queries with parameters in your Spring Boot production environment, while considering these potential downsides.
+
+## Why Log SQL Queries in Production?
+
+*   **Debugging:**  Identify the exact SQL statements that are causing errors or unexpected behavior.  Seeing the parameters used allows you to pinpoint data-related issues.
+*   **Performance Analysis:** Determine which queries are slow or resource-intensive.  Logging execution times can help you optimize your database schema or query logic.
+*   **Security Auditing:** Track all database interactions for security compliance and detect potential SQL injection attempts.
+*   **Data Integrity Validation:** Ensure that data modifications are performed as expected by reviewing the executed SQL commands.
+
+## Challenges of SQL Logging in Production
+
+*   **Performance Impact:** Excessive logging can degrade application performance due to the overhead of writing to disk or sending logs over the network.
+*   **Security Risks:** Exposing sensitive data (e.g., passwords, API keys) in logs can create security vulnerabilities.
+*   **Log Volume:**  Production systems generate a large volume of logs. Managing and analyzing this data can be challenging.
+*   **Configuration Complexity:** Setting up proper logging requires careful configuration to avoid performance bottlenecks and security risks.
+
+## Methods for Logging SQL Queries with Parameters in Spring Boot
+
+Here are several approaches, ranging from simple to more complex, for logging SQL queries with parameters in your Spring Boot application.  We'll cover:
+
+1.  **Using `application.properties` and `logging.level` (Simple, but Limited)**
+2.  **Using a `DataSourceProxy` (Recommended for Comprehensive Logging)**
+3.  **Using Spring AOP (Aspect-Oriented Programming) (Flexible, but Requires More Setup)**
+4.  **Using a JDBC Interceptor (Database-Specific, Can Be More Efficient)**
+
+### 1. Using `application.properties` and `logging.level` (Simple, but Limited)
+
+This is the simplest approach, but it provides the least control and might not always show parameters depending on your JDBC driver and logging configuration.
+
+```properties
+# application.properties
+spring.datasource.url=jdbc:mysql://localhost:3306/mydatabase
+spring.datasource.username=myuser
+spring.datasource.password=mypassword
+logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG
+logging.level.org.springframework.jdbc.datasource.DataSourceTransactionManager=DEBUG
+logging.level.org.springframework.transaction.interceptor=TRACE # For Transaction logging
+```
+
+**Explanation:**
+
+*   `logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG`: This sets the logging level for the `JdbcTemplate` class to `DEBUG`. `JdbcTemplate` is a core class in Spring for interacting with databases.  At the DEBUG level, Spring will log SQL queries, but the level of parameter detail is limited.
+*   `logging.level.org.springframework.jdbc.datasource.DataSourceTransactionManager=DEBUG`: This line sets the logging level for the `DataSourceTransactionManager` to `DEBUG`.  This will log transaction-related activities.
+*   `logging.level.org.springframework.transaction.interceptor=TRACE`:  This sets the logging level for the `TransactionInterceptor` to `TRACE`.  This provides the most verbose logging regarding transaction management.
+
+**Pros:**
+
+*   Easy to configure.
+*   No code changes required.
+
+**Cons:**
+
+*   Limited control over logging output.
+*   Parameter values may not be displayed.
+*   Can be very verbose and noisy, especially at the `TRACE` level.
+*   Not suitable for production environments due to performance impact and log volume.
+
+### 2. Using a `DataSourceProxy` (Recommended for Comprehensive Logging)
+
+This is a more robust approach that allows you to intercept and log all SQL queries and their parameters.  We'll use the `net.ttddyy.dsproxy` library.
+
+**Dependencies (pom.xml or build.gradle.kts):**
+
+```xml
+<!-- pom.xml -->
+<dependency>
+    <groupId>net.ttddyy</groupId>
+    <artifactId>datasource-proxy</artifactId>
+    <version>1.8.1</version>
+</dependency>
+```
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("net.ttddyy:datasource-proxy:1.8.1")
+}
+```
+
+**Configuration:**
+
+```java
+import net.ttddyy.dsproxy.listener.logging.SLF4JQueryLoggingListener;
+import net.ttddyy.dsproxy.support.DataSourceProxy;
+import org.springframework.boot.jdbc.DataSourceBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+
+import javax.sql.DataSource;
+
+@Configuration
+public class DataSourceConfiguration {
+
+    @Bean
+    @Primary  // Make this the primary DataSource
+    public DataSource dataSource() {
+        DataSourceBuilder<?> dataSourceBuilder = DataSourceBuilder.create();
+        dataSourceBuilder.driverClassName("com.mysql.cj.jdbc.Driver"); // Replace with your driver
+        dataSourceBuilder.url("jdbc:mysql://localhost:3306/mydatabase"); // Replace with your URL
+        dataSourceBuilder.username("myuser"); // Replace with your username
+        dataSourceBuilder.password("mypassword"); // Replace with your password
+        DataSource dataSource = dataSourceBuilder.build();
+
+        // Add DataSource Proxy
+        SLF4JQueryLoggingListener loggingListener = new SLF4JQueryLoggingListener();
+        loggingListener.setQueryLogEntryCreator(new net.ttddyy.dsproxy.listener.logging.DefaultQueryLogEntryCreator()); // Optional: Customize log format
+
+        return new DataSourceProxy(dataSource, loggingListener);
+    }
+}
+```
+
+**Explanation:**
+
+1.  **Dependencies:**  Add the `datasource-proxy` dependency to your project.
+2.  **Configuration Class (`DataSourceConfiguration.java`):**
+    *   This class configures the `DataSource` bean. We use `@Primary` to ensure this is the `DataSource` used by Spring.
+    *   We create a standard `DataSource` using `DataSourceBuilder`.  Replace the driver class name, URL, username, and password with your database credentials.
+    *   We create a `SLF4JQueryLoggingListener`, which is responsible for logging the SQL queries to SLF4J (the logging facade used by Spring Boot).
+    *   We wrap the original `DataSource` with a `DataSourceProxy`. This proxy intercepts all calls to the `DataSource`, including SQL execution.  The `loggingListener` is registered with the proxy, so it receives events when queries are executed.
+    *   Optionally, you can customize the log format using `setQueryLogEntryCreator`.
+
+**Pros:**
+
+*   Logs SQL queries with parameters.
+*   Flexible configuration options.
+*   Uses SLF4J for logging, integrating well with Spring Boot's logging infrastructure.
+*   `DataSourceProxy` is non-invasive.
+
+**Cons:**
+
+*   Requires adding a dependency.
+*   Slightly more complex configuration than basic logging.
+*   Performance impact (although generally acceptable for most production environments, you should measure).
+
+**Important Considerations for Production:**
+
+*   **Log Level:** Ensure your logging level is set appropriately (e.g., `INFO`, `WARN`, or `ERROR`) to avoid excessive logging.  Consider using `DEBUG` only temporarily for troubleshooting.  You can adjust the logging level in `application.properties` or `application.yml`.
+*   **Log Rotation:** Configure log rotation to prevent your logs from filling up the disk.  Spring Boot automatically configures log rotation if you use Logback.
+*   **Security:**  Be extremely careful about logging sensitive data.  Consider filtering or masking sensitive parameters before logging them.  You can implement custom query log entry creators to redact or exclude sensitive information.
+*   **Performance Testing:**  Thoroughly test the performance of your application after enabling SQL logging to ensure that it doesn't negatively impact performance.
+*   **Asynchronous Logging:** Consider using asynchronous logging to minimize the performance impact.  Logback supports asynchronous appenders.
+
+**Example Log Output:**
+
+The output would look something like this (assuming you've configured your logger (e.g. Logback) to format the output):
+
+```
+2024-10-26 10:00:00.000 INFO  [application,test] - Name:dataSourceProxy, Time:32, Success:True, Type:Statement, Batch:False, QuerySize:1, Query:["SELECT * FROM users WHERE id = ?"], Params:[(1)], ParamsList:[(1)], BatchParams:[]
+```
+
+### 3. Using Spring AOP (Aspect-Oriented Programming) (Flexible, but Requires More Setup)
+
+AOP allows you to intercept method calls at specific points in your application.  You can use it to intercept calls to your data access methods and log the SQL queries and parameters.  This approach offers more flexibility but requires more setup.
+
+**Configuration:**
+
+```java
+import org.aspectj.lang.JoinPoint;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Before;
+import org.aspectj.lang.annotation.Pointcut;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
+
+@Aspect
+@Component
+public class QueryLoggingAspect {
+
+    private static final Logger logger = LoggerFactory.getLogger(QueryLoggingAspect.class);
+
+    @Pointcut("execution(* com.example.repository.*.*(..))") // Pointcut to Repository methods
+    public void repositoryMethods() {}
+
+    @Before("repositoryMethods()")
+    public void logQuery(JoinPoint joinPoint) {
+        // Get the method name
+        String methodName = joinPoint.getSignature().getName();
+
+        // Get the arguments passed to the method
+        Object[] args = joinPoint.getArgs();
+
+        // Log the method name and arguments
+        logger.info("Executing Repository Method: {} with arguments: {}", methodName, Arrays.toString(args));
+
+        // You'll need to actually extract the SQL query and parameters from the
+        // method invocation.  This usually requires inspecting the arguments and
+        // understanding how your data access layer (e.g., Spring Data JPA, JdbcTemplate)
+        // builds the SQL query.  This example shows a basic logging of the method call.
+        // In a real application, you would need more sophisticated logic to extract the SQL.
+
+        // Example using JdbcTemplate if you know the query and params are passed directly:
+        // if (args.length > 0 && args[0] instanceof String) {
+        //    String sql = (String) args[0];
+        //    Object[] params = Arrays.copyOfRange(args, 1, args.length);
+        //    logger.info("SQL Query: {}", sql);
+        //    logger.info("SQL Parameters: {}", Arrays.toString(params));
+        // }
+
+    }
+}
+```
+
+**Explanation:**
+
+1.  **AOP Dependency:**  Ensure you have the `spring-boot-starter-aop` dependency in your project.
+2.  **`@Aspect` and `@Component`:**  The `QueryLoggingAspect` class is annotated with `@Aspect` to indicate that it's an aspect and `@Component` to make it a Spring-managed bean.
+3.  **`@Pointcut`:** The `@Pointcut` annotation defines a pointcut expression that specifies which methods should be intercepted.  In this example, `execution(* com.example.repository.*.*(..))` intercepts all methods in all classes within the `com.example.repository` package. Adjust this pointcut to match your repository or data access classes.
+4.  **`@Before`:** The `@Before` annotation indicates that the `logQuery` method should be executed before the methods matched by the pointcut.
+5.  **`JoinPoint`:** The `JoinPoint` object provides access to information about the method being intercepted, such as the method name and arguments.
+6.  **Logging Logic:**  The `logQuery` method logs the method name and arguments.  **Crucially, this example shows a placeholder for extracting the SQL query and parameters.**  You need to adapt this part of the code to your specific data access implementation (e.g., Spring Data JPA, JdbcTemplate).  If you're using JdbcTemplate, you might be able to access the SQL query and parameters directly from the method arguments.  If you're using Spring Data JPA, you'll likely need a more complex approach (perhaps using `Hibernate`'s logging or a custom `EntityManager` implementation).
+
+**Pros:**
+
+*   Flexible and powerful.
+*   Can intercept calls to any method in your application.
+*   Good for complex logging scenarios.
+
+**Cons:**
+
+*   More complex to set up than other methods.
+*   Requires understanding of AOP concepts.
+*   The most challenging part is extracting the SQL query and parameters from the method invocation.  This is highly dependent on your data access technology.  The provided code shows *how* to apply AOP, not how to *extract* SQL.
+
+**Important Notes:**
+
+*   **SQL Extraction:** Extracting the SQL query and parameters from a Spring Data JPA repository is *significantly* more difficult than extracting it from a direct JdbcTemplate call. Spring Data JPA uses an ORM (Hibernate, etc.) which dynamically generates SQL.  You might need to:
+    *   Enable Hibernate's SQL logging (`hibernate.show_sql=true` and `hibernate.format_sql=true` in your `application.properties` or `application.yml`).  However, this logs to the console, not your configured logging system.
+    *   Use a custom `EntityManager` implementation with a `StatementInspector` to intercept SQL generation.  This is advanced and complex.
+    *   Consider using a library specifically designed for Spring Data JPA query interception.
+
+### 4. Using a JDBC Interceptor (Database-Specific, Can Be More Efficient)
+
+Some JDBC drivers provide built-in interceptor mechanisms that allow you to intercept and modify SQL queries before they are executed.  This approach can be more efficient than other methods because the interception happens at the JDBC driver level.  However, it's database-specific and requires driver configuration.
+
+**Example (MySQL):**
+
+1.  **Implement a MySQL Interceptor:**
+
+```java
+import com.mysql.cj.interceptors.QueryInterceptor;
+import com.mysql.cj.log.Log;
+import com.mysql.cj.protocol.Message;
+import com.mysql.cj.protocol.Resultset;
+import com.mysql.cj.protocol.ServerSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Properties;
+
+public class MySqlQueryInterceptor implements QueryInterceptor {
+
+    private static final Logger logger = LoggerFactory.getLogger(MySqlQueryInterceptor.class);
+
+    @Override
+    public QueryInterceptor init(com.mysql.cj.log.Log log, Properties properties) {
+        return this;
+    }
+
+    @Override
+    public <T extends Resultset> T preProcess(String sql, com.mysql.cj.Query query, ServerSession serverSession) {
+        if (sql != null) {
+            logger.info("Executing SQL: {}", sql);
+            // You might be able to access parameters from the query object,
+            // but this is driver-specific and may require reflection.
+            // Accessing Parameters:  This is the difficult part.
+            //  The 'query' object *might* contain the parameters,
+            // but accessing them directly is driver-specific.
+            //  You might need to use reflection or inspect the internal state
+            // of the 'query' object, which is not recommended and can break
+            // with driver updates.
+        }
+        return null;
+    }
+
+    @Override
+    public boolean executeTopLevelOnly() {
+        return true; // Only intercept top-level queries
+    }
+
+
+    @Override
+    public <T extends Resultset> T postProcess(String sql, com.mysql.cj.Query query, T rs, ServerSession serverSession) {
+        return rs;
+    }
+
+    @Override
+    public void destroy() {
+
+    }
+}
+```
+
+2.  **Configure the MySQL Driver:**
+
+   Modify your `application.properties` or `application.yml` file to include the interceptor.
+
+   ```properties
+   spring.datasource.url=jdbc:mysql://localhost:3306/mydatabase?queryInterceptors=com.example.MySqlQueryInterceptor
+   ```
+
+   Make sure to replace `com.example.MySqlQueryInterceptor` with the fully qualified name of your interceptor class.
+
+**Explanation:**
+
+1.  **Interceptor Implementation:**
+    *   Implement the `QueryInterceptor` interface (from `com.mysql.cj.interceptors`).
+    *   The `preProcess` method is called before the query is executed. You can access the SQL query from the `sql` parameter.
+    *   The `postProcess` method is called after the query is executed.
+    *   The `executeTopLevelOnly` method determines whether to intercept only top-level queries or also subqueries.
+2.  **Driver Configuration:**
+    *   Add the `queryInterceptors` parameter to the JDBC URL.
+    *   Specify the fully qualified name of your interceptor class.
+
+**Pros:**
+
+*   Potentially more efficient than other methods.
+*   Database-specific and allows for fine-grained control.
+
+**Cons:**
+
+*   Database-specific (not portable).
+*   Requires driver configuration.
+*   Accessing query parameters from the `query` object can be very difficult and driver-specific, often requiring reflection or internal state inspection, which is discouraged. The example code above highlights this difficulty.
+
+**Important:**
+
+*   The MySQL Connector/J documentation provides information on using interceptors. Consult the documentation for your specific JDBC driver for details on how to configure and use interceptors.
+*   Accessing parameters from the `query` object in the `preProcess` method is the most challenging aspect. The availability and structure of parameters depend heavily on the specific JDBC driver.
+*  Consider the maintainability and upgrade path of your code when using JDBC interceptors. Changes to the driver's internal implementation might break your interceptor.
+
+## Best Practices and Considerations
+
+*   **Log Level:**  Use appropriate log levels to avoid excessive logging.
+*   **Log Rotation:** Configure log rotation to prevent logs from filling up the disk.
+*   **Security:**  Protect sensitive data by filtering or masking parameters before logging them.  Consider creating custom query log entry creators for masking.
+*   **Performance Testing:**  Thoroughly test the performance of your application after enabling SQL logging.
+*   **Asynchronous Logging:** Use asynchronous logging to minimize the performance impact.
+*   **Centralized Logging:** Consider using a centralized logging system (e.g., ELK stack, Splunk) to manage and analyze your logs.
+*   **Conditional Logging:**  Enable SQL logging only in specific environments or for specific users/transactions.
+*   **Structured Logging:** Use structured logging (e.g., JSON format) to make it easier to parse and analyze your logs.
+*   **Avoid `System.out.println`:**  Never use `System.out.println` for logging in production code.  Use a proper logging framework (SLF4J/Logback).
+
+## Conclusion
+
+Logging SQL queries with parameters in a Spring Boot production environment is essential for debugging, performance analysis, and security auditing. This article presented several methods for achieving detailed SQL logging, ranging from simple to more complex. The `DataSourceProxy` approach is generally recommended for its balance of comprehensive logging, flexibility, and ease of integration. However, always consider the potential performance impact and security risks, and choose the approach that best suits your specific needs and environment. Remember to implement best practices for log management, security, and performance to ensure that your logging strategy is effective and sustainable.  The most important takeaway is to prioritize security by redacting sensitive information from logs whenever possible.  Good logging is an investment that will pay dividends in the long run, by making it easier to diagnose problems, optimize performance, and maintain the security of your application.
