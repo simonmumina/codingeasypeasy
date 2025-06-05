@@ -1,0 +1,437 @@
+---
+title: 'NestJS Log Aggregation: ELK Stack (Elasticsearch, Logstash, Kibana) & Winston Transports'
+date: '2024-02-29'
+lastmod: '2024-03-08'
+tags: ['nestjs', 'logging', 'elk stack', 'elasticsearch', 'logstash', 'kibana', 'winston', 'log aggregation', 'microservices', 'monitoring', 'observability']
+draft: false
+summary: 'Learn how to configure robust log aggregation for your NestJS application using the ELK stack (Elasticsearch, Logstash, Kibana) and Winston transports. This guide provides a step-by-step approach with code examples for setting up centralized logging and analysis.'
+authors: ['default']
+---
+
+# NestJS Log Aggregation: ELK Stack (Elasticsearch, Logstash, Kibana) & Winston Transports
+
+Effective logging is crucial for monitoring, debugging, and maintaining the health of any application, especially in microservices architectures. This blog post will guide you through configuring robust log aggregation for your NestJS application using the powerful ELK stack (Elasticsearch, Logstash, Kibana) in conjunction with Winston transports. We'll cover everything from setting up the ELK stack to configuring Winston within your NestJS application to ship logs effectively.
+
+## Why Log Aggregation with ELK Stack & Winston?
+
+*   **Centralized Logging:** Collect logs from all your NestJS services into a single, searchable repository.
+*   **Enhanced Debugging:** Easily identify and troubleshoot issues by correlating logs from different parts of your system.
+*   **Real-time Monitoring:** Visualize log data in real-time to gain insights into application performance and health.
+*   **Scalability:** The ELK stack is designed to handle large volumes of log data.
+*   **Powerful Search and Analytics:** Elasticsearch provides powerful search and analytics capabilities for your logs.
+*   **Customizable Dashboards:** Kibana allows you to create custom dashboards to monitor key metrics and trends.
+*   **Winston Flexibility:** Winston's transport mechanism provides flexibility in routing logs to various destinations, including Logstash.
+
+## Prerequisites
+
+Before you begin, make sure you have the following installed and configured:
+
+*   **Node.js and npm:** (or yarn/pnpm)
+*   **NestJS CLI:** `npm i -g @nestjs/cli`
+*   **Docker (optional but highly recommended):**  For easy setup of the ELK stack.
+*   **Basic Understanding of NestJS:** Familiarity with NestJS modules, providers, and controllers.
+
+## Step 1: Setting Up the ELK Stack (Docker Compose)**
+
+The easiest way to set up the ELK stack is using Docker Compose. Create a `docker-compose.yml` file with the following configuration:
+
+```yaml
+version: "3.9"
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false  # Disable security for development - REMOVE IN PRODUCTION
+    ports:
+      - 9200:9200
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - elk
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.3
+    container_name: logstash
+    depends_on:
+      - elasticsearch
+    ports:
+      - 5000:5000  # Logstash input port
+      - 9600:9600 # Logstash monitoring port
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline/
+    networks:
+      - elk
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.3
+    container_name: kibana
+    ports:
+      - 5601:5601
+    depends_on:
+      - elasticsearch
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - elk
+
+networks:
+  elk:
+    driver: bridge
+
+volumes:
+  esdata:
+```
+
+**Explanation:**
+
+*   **elasticsearch:**  This service defines the Elasticsearch container, which is the core of the ELK stack.  `discovery.type=single-node` is suitable for development. **Important:**  `xpack.security.enabled=false` disables security features.  **Do not use this in production!** Configure proper security settings for production environments.
+*   **logstash:** This service defines the Logstash container, responsible for processing and transforming logs.  It's configured to listen on port 5000 for incoming logs.  The `./logstash/pipeline` volume mounts a local directory containing the Logstash pipeline configuration.
+*   **kibana:** This service defines the Kibana container, which provides a web interface for visualizing and analyzing the log data.  It connects to Elasticsearch at `http://elasticsearch:9200`.
+*   **networks:** Defines a Docker network named `elk` for communication between the services.
+*   **volumes:** Defines a Docker volume named `esdata` for persistent storage of Elasticsearch data.
+
+**Logstash Pipeline Configuration (logstash/pipeline/logstash.conf):**
+
+Create a `logstash.conf` file in the `logstash/pipeline` directory with the following content:
+
+```conf
+input {
+  tcp {
+    port => 5000
+    codec => json
+  }
+}
+
+filter {
+  json {
+    source => "message"  # Assumes the Winston log message is in the 'message' field
+  }
+  # Add any other filters to transform or enrich the log data here
+}
+
+output {
+  elasticsearch {
+    hosts => ["elasticsearch:9200"]
+    index => "nestjs-logs-%{+YYYY.MM.dd}" # Creates daily indexes
+  }
+}
+```
+
+**Explanation:**
+
+*   **input:** Configures Logstash to listen for TCP connections on port 5000. The `codec => json` specifies that the incoming data is in JSON format.
+*   **filter:** The `json` filter parses the `message` field (assuming Winston sends the log message in this field) as JSON.  You can add more filters here to extract specific fields from your logs or to enrich them with additional information (e.g., geoip lookups).
+*   **output:** Configures Logstash to send the processed logs to Elasticsearch at `elasticsearch:9200`. The `index` option specifies the index name for the logs. `nestjs-logs-%{+YYYY.MM.dd}` creates a new index for each day, which can help with performance and data management.
+
+**Starting the ELK Stack:**
+
+Navigate to the directory containing your `docker-compose.yml` file and run the following command:
+
+```bash
+docker-compose up -d
+```
+
+This will start the Elasticsearch, Logstash, and Kibana containers in detached mode.
+
+**Accessing Kibana:**
+
+Once the containers are running, you can access Kibana in your browser at `http://localhost:5601`. It might take a few minutes for Kibana to become fully available.
+
+## Step 2: Setting up Winston in your NestJS Application
+
+First, install the necessary dependencies:
+
+```bash
+npm install winston winston-transport --save
+npm install @nestjs/platform-express express --save # required for winston-express
+npm install winston-elasticsearch@^0 --save #optional ElasticSearch transport
+```
+
+Now, create a `LoggerModule` and a custom `LoggerService` in your NestJS application:
+
+**logger.module.ts:**
+
+```typescript
+import { Module } from '@nestjs/common';
+import { LoggerService } from './logger.service';
+
+@Module({
+  providers: [LoggerService],
+  exports: [LoggerService],
+})
+export class LoggerModule {}
+```
+
+**logger.service.ts:**
+
+```typescript
+import { Injectable, LoggerService as NestLoggerService, Scope } from '@nestjs/common';
+import { Logger, createLogger, transports, format } from 'winston';
+import * as Transport from 'winston-transport';
+import { utilities as nestWinstonModuleUtilities, WinstonModule } from 'nest-winston';
+
+@Injectable({ scope: Scope.TRANSIENT })
+export class LoggerService implements NestLoggerService {
+  private readonly logger: Logger;
+
+  constructor() {
+    const logFormat = format.combine(
+      format.timestamp(),
+      format.ms(),
+      format.splat(),
+      format.json(),
+    );
+
+    const consoleFormat = format.combine(
+      format.timestamp(),
+      format.ms(),
+      format.splat(),
+      format.colorize({ all: true }),
+      format.printf((msg) => {
+        return `${msg.timestamp} [${msg.level}] ${msg.context ? `[${msg.context}] ` : ''}${msg.message} ${msg.ms}`;
+      }),
+    );
+
+
+    const customTransports: Transport[] = [
+      new transports.Console({
+        format: consoleFormat,
+      }),
+      // Example of sending to a file
+      // new transports.File({ filename: 'application.log' }),
+      // Example of sending to Logstash via TCP.
+      new transports.Console(), //keep the console transport for local development purposes
+      new transports.Tcp({ host: 'localhost', port: 5000, level: 'info' }),  // Change host and port if necessary
+    ];
+
+
+    this.logger = createLogger({
+      level: 'info',
+      format: logFormat,
+      defaultMeta: { service: 'your-service-name' },  // Replace with your service name
+      transports: customTransports,
+    });
+  }
+
+  log(message: string, context?: string) {
+    this.logger.info(message, { context });
+  }
+
+  error(message: string, trace: string, context?: string) {
+    this.logger.error(message, { trace, context });
+  }
+
+  warn(message: string, context?: string) {
+    this.logger.warn(message, { context });
+  }
+
+  debug(message: string, context?: string) {
+    this.logger.debug(message, { context });
+  }
+
+  verbose(message: string, context?: string) {
+    this.logger.verbose(message, { context });
+  }
+
+  setContext(context: string) {
+    // Optional: Implement setContext if needed, e.g., to pass the context to the logger.
+    // this.logger.defaultMeta = { ...this.logger.defaultMeta, context };
+  }
+
+}
+```
+
+**Explanation:**
+
+*   **`@Injectable({ scope: Scope.TRANSIENT })`:** This makes the logger instance request-scoped, creating a new instance for each request.  This helps in cases where you need to set request-specific context.  Remove this if you want a single logger instance for the entire application.
+*   **`winston.createLogger()`:**  Creates a new Winston logger instance.
+*   **`format.combine(...)`:**  Combines multiple Winston formatters.
+*   **`format.timestamp()`:**  Adds a timestamp to each log message.
+*   **`format.ms()`:** Adds time in ms to each log message
+*   **`format.json()`:** Formats the log message as JSON. Crucial for ELK stack compatibility.
+*   **`format.colorize()`:**  Adds colors to the console output (useful for local development).
+*   **`format.printf()`:**  Defines a custom format for console output.
+*   **`defaultMeta: { service: 'your-service-name' }`:** Sets default metadata for all log messages.  **Replace `your-service-name` with the actual name of your NestJS service.**
+*   **`transports.Console()`:**  Logs messages to the console.
+*   **`transports.Tcp()`:**  Logs messages to a TCP socket.  Configure the `host` and `port` to match your Logstash configuration.  We send logs to Logstash on port `5000`.
+*   **`transports.File()`:** Writes logs to a file.  Use this carefully, as excessive file logging can impact performance.
+*   **Log Levels:** Winston supports various log levels: `error`, `warn`, `info`, `verbose`, and `debug`. Configure the logger's `level` to control which messages are logged. In this example we are filtering by `info`
+*   **`setContext()`:**  An optional method that can be used to set a context for the logger.  This is useful for adding information about the current request or operation to the log messages.
+
+**Using the LoggerService in your NestJS Application:**
+
+Import the `LoggerModule` into your application module (`app.module.ts`):
+
+```typescript
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { LoggerModule } from './logger/logger.module';
+
+@Module({
+  imports: [LoggerModule],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
+```
+
+Now you can inject the `LoggerService` into your controllers or services:
+
+```typescript
+import { Controller, Get, Inject } from '@nestjs/common';
+import { AppService } from './app.service';
+import { LoggerService } from './logger/logger.service';
+
+@Controller()
+export class AppController {
+  constructor(
+    private readonly appService: AppService,
+    @Inject(LoggerService) private readonly logger: LoggerService,
+  ) {}
+
+  @Get()
+  getHello(): string {
+    this.logger.log('Calling getHello endpoint', AppController.name);
+    this.logger.warn('This is a warning message from AppController', AppController.name);
+    this.logger.error('This is an error message from AppController', '', AppController.name);  // Pass empty string for trace
+
+    return this.appService.getHello();
+  }
+}
+```
+
+**Explanation:**
+
+*   **`@Inject(LoggerService)`:** Injects the `LoggerService` into the `AppController`.
+*   **`this.logger.log(...)`:**  Logs a message using the `log` method.  You can also use `this.logger.error()`, `this.logger.warn()`, `this.logger.debug()`, and `this.logger.verbose()` for different log levels.
+*   **Context:** The context parameter (e.g., `AppController.name`) is used to add context information to the log message.  This is useful for identifying the source of the log message.
+
+## Step 3: Testing the Log Aggregation
+
+1.  **Start your NestJS application:**  `npm run start:dev` (or your preferred start command).
+2.  **Access your application's endpoints:** This will trigger the log messages in your controllers and services.
+3.  **Check Logstash logs:**  Use `docker logs logstash` to see if Logstash is receiving and processing the logs.  Look for any errors.
+4.  **Access Kibana:**  Go to `http://localhost:5601` in your browser.
+5.  **Create an Index Pattern:** Kibana needs an index pattern to understand the structure of your data in Elasticsearch.
+    *   Go to "Stack Management" -> "Index Patterns".
+    *   Create a new index pattern that matches the index name you configured in Logstash (e.g., `nestjs-logs-*`).
+    *   Select the `@timestamp` field as the time filter field name.
+6.  **Discover Logs:** Go to "Discover" in Kibana. You should now see your NestJS logs in the Kibana UI. You can search, filter, and analyze your logs using Kibana's powerful features.
+
+## Step 4: Advanced Configuration & Best Practices
+
+*   **Environment Variables:**  Store sensitive configuration values (e.g., Logstash host, API keys) in environment variables instead of hardcoding them in your code.  Use NestJS's `ConfigModule` to manage environment variables.
+*   **Log Rotation:**  Implement log rotation to prevent log files from growing too large.  You can use Winston's `DailyRotateFile` transport for this.
+*   **Asynchronous Logging:**  Use asynchronous logging to avoid blocking the main thread of your application. Winston provides asynchronous transports.
+*   **Error Handling:**  Implement proper error handling to catch exceptions and log them appropriately.
+*   **Correlation IDs:**  Generate and propagate correlation IDs across your services to track requests as they flow through your system. Include the correlation ID in your log messages to facilitate troubleshooting.
+*   **Structured Logging:**  Use structured logging (e.g., JSON) to make it easier to parse and analyze your logs.
+*   **Security:**  Enable security features in the ELK stack to protect your log data.  This is especially important in production environments.
+*   **Performance Tuning:**  Tune the ELK stack for optimal performance based on your workload.
+
+##  Winston Elasticsearch Transport (Optional)
+
+If you want to send logs directly to Elasticsearch from Winston (bypassing Logstash), you can use the `winston-elasticsearch` transport.
+
+Install the package:
+
+```bash
+npm install winston-elasticsearch@^0 --save
+```
+
+Then, modify your `logger.service.ts` to include the Elasticsearch transport:
+
+```typescript
+import { Injectable, LoggerService as NestLoggerService, Scope } from '@nestjs/common';
+import { Logger, createLogger, transports, format } from 'winston';
+import * as Transport from 'winston-transport';
+import { WinstonModule } from 'nest-winston';
+import * as Elasticsearch from 'winston-elasticsearch';
+
+@Injectable({ scope: Scope.TRANSIENT })
+export class LoggerService implements NestLoggerService {
+  private readonly logger: Logger;
+
+  constructor() {
+    const logFormat = format.combine(
+      format.timestamp(),
+      format.ms(),
+      format.splat(),
+      format.json(),
+    );
+
+    const consoleFormat = format.combine(
+      format.timestamp(),
+      format.ms(),
+      format.splat(),
+      format.colorize({ all: true }),
+      format.printf((msg) => {
+        return `${msg.timestamp} [${msg.level}] ${msg.context ? `[${msg.context}] ` : ''}${msg.message} ${msg.ms}`;
+      }),
+    );
+
+
+    const esTransportOpts = {
+      level: 'info',
+      clientOpts: { node: 'http://localhost:9200' }, // Elasticsearch connection options
+      indexPrefix: 'nestjs-logs',
+      indexSuffixPattern: '-%Y.%m.%d',
+      bufferLimit: 100,
+    };
+
+    const customTransports: Transport[] = [
+      new transports.Console({
+        format: consoleFormat,
+      }),
+      new Elasticsearch(esTransportOpts)
+    ];
+
+    this.logger = createLogger({
+      level: 'info',
+      format: logFormat,
+      defaultMeta: { service: 'your-service-name' },  // Replace with your service name
+      transports: customTransports,
+    });
+  }
+
+  log(message: string, context?: string) {
+    this.logger.info(message, { context });
+  }
+
+  error(message: string, trace: string, context?: string) {
+    this.logger.error(message, { trace, context });
+  }
+
+  warn(message: string, context?: string) {
+    this.logger.warn(message, { context });
+  }
+
+  debug(message: string, context?: string) {
+    this.logger.debug(message, { context });
+  }
+
+  verbose(message: string, context?: string) {
+    this.logger.verbose(message, { context });
+  }
+
+  setContext(context: string) {
+    // Optional: Implement setContext if needed, e.g., to pass the context to the logger.
+    // this.logger.defaultMeta = { ...this.logger.defaultMeta, context };
+  }
+
+}
+```
+
+**Important Considerations when using winston-elasticsearch:**
+
+*   **Performance:**  Directly sending logs to Elasticsearch can be more resource-intensive than using Logstash.
+*   **Logstash Filtering:**  You lose the ability to filter and transform your logs using Logstash's powerful filters.
+*   **Elasticsearch Version Compatibility:**  Ensure that the `winston-elasticsearch` version is compatible with your Elasticsearch version.  The `@^0` in the `npm install` command helps with version compatibility.
+*   **Error Handling:**  Implement robust error handling to handle potential connection issues with Elasticsearch.
+
+## Conclusion
+
+By following this guide, you've successfully configured log aggregation for your NestJS application using the ELK stack and Winston transports. This provides you with a centralized logging solution that enables you to easily monitor, debug, and analyze your application's performance and health. Remember to tailor the configuration to your specific needs and to implement best practices for security, performance, and maintainability. Remember to carefully evaluate whether to bypass Logstash based on your specific requirements.  Logstash provides powerful filtering and transformation capabilities, while `winston-elasticsearch` can be a good option for simpler use cases where you want to avoid the complexity of Logstash. Happy logging!

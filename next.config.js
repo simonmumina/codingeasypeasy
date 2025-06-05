@@ -68,10 +68,8 @@ module.exports = () => {
     basePath,
     reactStrictMode: true,
     pageExtensions: ['ts', 'tsx', 'js', 'jsx', 'md', 'mdx'],
-    swcMinify: false,
     experimental: {
       webpackMemoryOptimizations: true,
-      swcMinify: false,
     },
     outputFileTracingExcludes: {
       '*': [

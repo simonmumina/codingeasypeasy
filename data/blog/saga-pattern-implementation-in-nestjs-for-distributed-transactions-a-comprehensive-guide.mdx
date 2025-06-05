@@ -1,0 +1,860 @@
+---
+title: 'Saga Pattern Implementation in NestJS for Distributed Transactions: A Comprehensive Guide'
+date: '2024-02-29'
+lastmod: '2024-03-08'
+tags: ['nestjs', 'saga pattern', 'distributed transactions', 'microservices', 'event sourcing', 'compensating transactions', 'architecture']
+draft: false
+summary: 'Learn how to implement the Saga pattern in NestJS for managing distributed transactions across multiple microservices. This comprehensive guide includes code examples and best practices for ensuring data consistency and reliability.'
+authors: ['default']
+---
+
+# Saga Pattern Implementation in NestJS for Distributed Transactions: A Comprehensive Guide
+
+In a microservices architecture, managing transactions that span multiple services can be a challenging task. Traditional ACID transactions, often used within a single database, don't easily translate to a distributed environment. This is where the Saga pattern comes to the rescue. This blog post will guide you through the Saga pattern and demonstrate how to implement it in a NestJS application to achieve reliable distributed transactions.
+
+## What is the Saga Pattern?
+
+The Saga pattern is a design pattern for managing distributed transactions by breaking down a large transaction into a sequence of smaller, local transactions. Each local transaction updates data within a single service. After each local transaction completes successfully, the Saga triggers the next transaction in the sequence.
+
+If a local transaction fails, the Saga executes a series of compensating transactions to undo the changes made by the preceding transactions.  This ensures eventual consistency across the participating services.  Instead of guaranteeing immediate ACID properties, the Saga pattern strives for eventual consistency while providing mechanisms to handle failures gracefully.
+
+There are two main ways to implement the Saga Pattern:
+
+*   **Choreography-based Saga:** Each service listens for events from other services and decides when to execute its local transaction based on those events. It's a decentralized approach.
+*   **Orchestration-based Saga:** A central orchestrator (the Saga Orchestrator) manages the entire transaction flow. It tells each service when to execute its local transaction.
+
+We will focus on the **Orchestration-based Saga** in this tutorial, as it offers better control and visibility.
+
+## Why Use the Saga Pattern?
+
+*   **Distributed Transactions:** Enables transactions across multiple microservices without relying on distributed transaction managers (e.g., two-phase commit) which can introduce complexity and performance bottlenecks.
+*   **Eventual Consistency:** Ensures data consistency across services, even if immediate consistency is not possible.
+*   **Fault Tolerance:** Provides mechanisms for handling failures and rolling back transactions to maintain data integrity.
+*   **Loose Coupling:** Promotes loose coupling between services, as they communicate through events or commands.
+*   **Scalability:** Improves scalability compared to traditional distributed transaction approaches.
+
+## Implementing the Saga Pattern in NestJS (Orchestration-based)
+
+Let's illustrate the Saga pattern with a concrete example. Imagine an e-commerce application where placing an order involves the following steps:
+
+1.  **Order Service:** Creates a new order.
+2.  **Payment Service:** Processes the payment.
+3.  **Inventory Service:** Reserves the required inventory.
+4.  **Shipping Service:** Schedules the shipment.
+
+If any of these steps fail, we need to undo the previous steps to ensure data consistency. For example, if the payment fails, we need to cancel the order and release any reserved inventory.
+
+### 1. Project Setup
+
+First, create a new NestJS project:
+
+```bash
+nest new saga-example
+cd saga-example
+npm install @nestjs/platform-express @nestjs/core @nestjs/common @nestjs/config @nestjs/typeorm typeorm pg reflect-metadata amqplib @golevelup/nestjs-rabbitmq
+npm install --save-dev @nestjs/cli @nestjs/schematics typescript ts-node
+```
+
+We'll use RabbitMQ for inter-service communication and PostgreSQL for database persistence. Feel free to adapt this to your preferred technologies.  Also, note the use of `@golevelup/nestjs-rabbitmq` which greatly simplifies RabbitMQ integration in NestJS.
+
+### 2. Define Events and Commands
+
+We'll use events to notify other services about state changes and commands to instruct services to perform actions. Let's define these:
+
+```typescript
+// order.events.ts
+
+export interface OrderCreatedEvent {
+  orderId: string;
+  userId: string;
+  totalAmount: number;
+}
+
+export interface OrderCancelledEvent {
+  orderId: string;
+  reason: string;
+}
+```
+
+```typescript
+// payment.commands.ts
+
+export interface ProcessPaymentCommand {
+  orderId: string;
+  userId: string;
+  amount: number;
+}
+
+export interface CancelPaymentCommand {
+  orderId: string;
+  reason: string;
+}
+```
+
+```typescript
+// inventory.commands.ts
+
+export interface ReserveInventoryCommand {
+  orderId: string;
+  productId: string;
+  quantity: number;
+}
+
+export interface ReleaseInventoryCommand {
+  orderId: string;
+  productId: string;
+  quantity: number;
+}
+```
+
+```typescript
+// shipping.commands.ts
+
+export interface ScheduleShippingCommand {
+  orderId: string;
+  address: string;
+}
+
+export interface CancelShippingCommand {
+  orderId: string;
+  reason: string;
+}
+```
+
+### 3. Order Service
+
+The Order Service will initiate the saga.  Let's create a simplified Order entity and a service to handle order creation.
+
+```typescript
+// order.entity.ts
+
+import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
+
+@Entity()
+export class Order {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column()
+  userId: string;
+
+  @Column()
+  totalAmount: number;
+
+  @Column({ default: 'PENDING' })
+  status: string; // PENDING, PAYMENT_PROCESSING, INVENTORY_RESERVED, SHIPPING_SCHEDULED, COMPLETED, FAILED
+}
+```
+
+```typescript
+// order.service.ts
+
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { Order } from './order.entity';
+import { OrderCreatedEvent } from './order.events';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
+
+@Injectable()
+export class OrderService {
+  constructor(
+    @InjectRepository(Order)
+    private readonly orderRepository: Repository<Order>,
+    private readonly amqpConnection: AmqpConnection,
+  ) {}
+
+  async createOrder(userId: string, totalAmount: number): Promise<Order> {
+    const order = this.orderRepository.create({ userId, totalAmount });
+    await this.orderRepository.save(order);
+
+    const orderCreatedEvent: OrderCreatedEvent = {
+      orderId: order.id,
+      userId: order.userId,
+      totalAmount: order.totalAmount,
+    };
+
+    this.amqpConnection.publish<string>('order.exchange', 'order.created', orderCreatedEvent);
+    console.log(`Published order.created event for order ID: ${order.id}`);
+    return order;
+  }
+
+  async updateOrderStatus(orderId: string, status: string): Promise<void> {
+    const order = await this.orderRepository.findOne({ where: { id: orderId } });
+    if (!order) {
+      throw new Error(`Order with ID ${orderId} not found`);
+    }
+    order.status = status;
+    await this.orderRepository.save(order);
+  }
+}
+```
+
+```typescript
+// order.module.ts
+
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { Order } from './order.entity';
+import { OrderService } from './order.service';
+import { ConfigModule } from '@nestjs/config';
+import { AmqpModule } from '@golevelup/nestjs-rabbitmq';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot(), // Load environment variables
+    TypeOrmModule.forFeature([Order]),
+    AmqpModule.forRootAsync({
+      useFactory: () => ({
+        exchanges: [
+          {
+            name: 'order.exchange',
+            type: 'topic',
+          },
+        ],
+        uri: process.env.RABBITMQ_URI || 'amqp://guest:guest@localhost:5672', // Replace with your RabbitMQ URI
+        connectionOptions: {
+          heartbeatIntervalInSeconds: 15,
+          reconnectTimeInSeconds: 30,
+        },
+      }),
+    }),
+  ],
+  providers: [OrderService],
+  exports: [OrderService],
+})
+export class OrderModule {}
+```
+
+**Explanation:**
+
+*   We define an `Order` entity using TypeORM.
+*   The `OrderService` creates orders and publishes an `OrderCreatedEvent` to RabbitMQ.
+*   We use `@golevelup/nestjs-rabbitmq` to connect to RabbitMQ and publish events.
+*   The `updateOrderStatus` method is used to update the order status during the saga execution.  Crucially, this will be called by other services when they've completed their part and inform the order service of their completion.
+
+### 4. Payment Service
+
+The Payment Service will process payments based on the `ProcessPaymentCommand`.
+
+```typescript
+// payment.service.ts
+
+import { Injectable } from '@nestjs/common';
+import { ProcessPaymentCommand, CancelPaymentCommand } from './payment.commands';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
+
+@Injectable()
+export class PaymentService {
+    constructor(private readonly amqpConnection: AmqpConnection) {}
+
+  async processPayment(command: ProcessPaymentCommand): Promise<boolean> {
+    console.log(`Processing payment for order ID: ${command.orderId}`);
+    // Simulate payment processing (e.g., call a payment gateway)
+    // In a real application, you would interact with a payment gateway here
+
+    // Simulate a successful payment
+    const isPaymentSuccessful = Math.random() > 0.1;  // Simulate occasional failure
+
+    if (isPaymentSuccessful) {
+      console.log(`Payment successful for order ID: ${command.orderId}`);
+      this.amqpConnection.publish<string>('order.exchange', 'payment.processed', { orderId: command.orderId });
+      return true;
+    } else {
+      console.error(`Payment failed for order ID: ${command.orderId}`);
+       this.amqpConnection.publish<string>('order.exchange', 'payment.failed', { orderId: command.orderId, reason: "Payment declined" });
+      return false;
+    }
+  }
+
+  async cancelPayment(command: CancelPaymentCommand): Promise<void> {
+    console.log(`Cancelling payment for order ID: ${command.orderId}`);
+    // Simulate payment cancellation (e.g., refund the payment)
+    // In a real application, you would interact with a payment gateway here
+
+    this.amqpConnection.publish<string>('order.exchange', 'payment.cancelled', { orderId: command.orderId });
+  }
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'payment.process',
+    queue: 'payment.process.queue'
+  })
+  async handleProcessPaymentCommand(command: ProcessPaymentCommand): Promise<void> {
+    await this.processPayment(command);
+  }
+
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'payment.cancel',
+    queue: 'payment.cancel.queue'
+  })
+  async handleCancelPaymentCommand(command: CancelPaymentCommand): Promise<void> {
+    await this.cancelPayment(command);
+  }
+}
+```
+
+```typescript
+// payment.module.ts
+
+import { Module } from '@nestjs/common';
+import { PaymentService } from './payment.service';
+import { AmqpModule } from '@golevelup/nestjs-rabbitmq';
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+  imports: [
+     ConfigModule.forRoot(),
+     AmqpModule.forRootAsync({
+      useFactory: () => ({
+        exchanges: [
+          {
+            name: 'order.exchange',
+            type: 'topic',
+          },
+        ],
+        uri: process.env.RABBITMQ_URI || 'amqp://guest:guest@localhost:5672',
+        connectionOptions: {
+          heartbeatIntervalInSeconds: 15,
+          reconnectTimeInSeconds: 30,
+        },
+      }),
+    }),
+  ],
+  providers: [PaymentService],
+})
+export class PaymentModule {}
+```
+
+**Explanation:**
+
+*   The `PaymentService` processes payments based on the `ProcessPaymentCommand`.
+*   It simulates a payment process and publishes `payment.processed` or `payment.failed` events to RabbitMQ.
+*   It also implements the `cancelPayment` method for compensating transactions, publishing a `payment.cancelled` event.
+*  The `@RabbitSubscribe` decorators automatically subscribe to the correct queues for processing and cancelling payments. This makes consuming messages from RabbitMQ very easy.
+
+### 5. Inventory Service
+
+The Inventory Service will reserve and release inventory.
+
+```typescript
+// inventory.service.ts
+
+import { Injectable } from '@nestjs/common';
+import { ReserveInventoryCommand, ReleaseInventoryCommand } from './inventory.commands';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
+
+@Injectable()
+export class InventoryService {
+    constructor(private readonly amqpConnection: AmqpConnection) {}
+
+  async reserveInventory(command: ReserveInventoryCommand): Promise<boolean> {
+    console.log(`Reserving inventory for order ID: ${command.orderId}, Product ID: ${command.productId}, Quantity: ${command.quantity}`);
+    // Simulate inventory reservation (e.g., update the inventory database)
+    // In a real application, you would interact with an inventory management system here
+
+    // Simulate successful inventory reservation
+    const isInventoryAvailable = Math.random() > 0.05; // Simulate occasional unavailability
+
+    if (isInventoryAvailable) {
+      console.log(`Inventory reserved for order ID: ${command.orderId}`);
+      this.amqpConnection.publish<string>('order.exchange', 'inventory.reserved', { orderId: command.orderId });
+      return true;
+    } else {
+      console.error(`Inventory unavailable for order ID: ${command.orderId}`);
+      this.amqpConnection.publish<string>('order.exchange', 'inventory.reservation.failed', { orderId: command.orderId, reason: "Insufficient Stock" });
+      return false;
+    }
+  }
+
+  async releaseInventory(command: ReleaseInventoryCommand): Promise<void> {
+    console.log(`Releasing inventory for order ID: ${command.orderId}, Product ID: ${command.productId}, Quantity: ${command.quantity}`);
+    // Simulate inventory release (e.g., update the inventory database)
+    // In a real application, you would interact with an inventory management system here
+    this.amqpConnection.publish<string>('order.exchange', 'inventory.released', { orderId: command.orderId });
+  }
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'inventory.reserve',
+    queue: 'inventory.reserve.queue'
+  })
+  async handleReserveInventoryCommand(command: ReserveInventoryCommand): Promise<void> {
+    await this.reserveInventory(command);
+  }
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'inventory.release',
+    queue: 'inventory.release.queue'
+  })
+  async handleReleaseInventoryCommand(command: ReleaseInventoryCommand): Promise<void> {
+    await this.releaseInventory(command);
+  }
+}
+```
+
+```typescript
+// inventory.module.ts
+
+import { Module } from '@nestjs/common';
+import { InventoryService } from './inventory.service';
+import { AmqpModule } from '@golevelup/nestjs-rabbitmq';
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot(),
+    AmqpModule.forRootAsync({
+      useFactory: () => ({
+        exchanges: [
+          {
+            name: 'order.exchange',
+            type: 'topic',
+          },
+        ],
+        uri: process.env.RABBITMQ_URI || 'amqp://guest:guest@localhost:5672',
+        connectionOptions: {
+          heartbeatIntervalInSeconds: 15,
+          reconnectTimeInSeconds: 30,
+        },
+      }),
+    }),
+  ],
+  providers: [InventoryService],
+})
+export class InventoryModule {}
+```
+
+**Explanation:**
+
+*   The `InventoryService` reserves inventory based on the `ReserveInventoryCommand`.
+*   It simulates inventory reservation and publishes `inventory.reserved` or `inventory.reservation.failed` events to RabbitMQ.
+*   It also implements the `releaseInventory` method for compensating transactions, publishing an `inventory.released` event.
+*   Again `@RabbitSubscribe` is used for easy message consumption.
+
+### 6. Shipping Service
+
+The Shipping Service will schedule and cancel shipments.
+
+```typescript
+// shipping.service.ts
+
+import { Injectable } from '@nestjs/common';
+import { ScheduleShippingCommand, CancelShippingCommand } from './shipping.commands';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
+
+@Injectable()
+export class ShippingService {
+    constructor(private readonly amqpConnection: AmqpConnection) {}
+
+  async scheduleShipping(command: ScheduleShippingCommand): Promise<boolean> {
+    console.log(`Scheduling shipping for order ID: ${command.orderId}`);
+    // Simulate shipping scheduling (e.g., call a shipping provider API)
+    // In a real application, you would interact with a shipping provider API here
+
+    // Simulate successful shipping scheduling
+    const isShippingPossible = Math.random() > 0.02;  // simulate occasional shipping failure
+
+    if (isShippingPossible) {
+      console.log(`Shipping scheduled for order ID: ${command.orderId}`);
+      this.amqpConnection.publish<string>('order.exchange', 'shipping.scheduled', { orderId: command.orderId });
+      return true;
+    } else {
+      console.error(`Shipping failed for order ID: ${command.orderId}`);
+      this.amqpConnection.publish<string>('order.exchange', 'shipping.scheduling.failed', { orderId: command.orderId, reason: "Shipping not available to this location" });
+      return false;
+    }
+  }
+
+  async cancelShipping(command: CancelShippingCommand): Promise<void> {
+    console.log(`Cancelling shipping for order ID: ${command.orderId}`);
+    // Simulate shipping cancellation (e.g., call a shipping provider API)
+    // In a real application, you would interact with a shipping provider API here
+    this.amqpConnection.publish<string>('order.exchange', 'shipping.cancelled', { orderId: command.orderId });
+  }
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'shipping.schedule',
+    queue: 'shipping.schedule.queue'
+  })
+  async handleScheduleShippingCommand(command: ScheduleShippingCommand): Promise<void> {
+    await this.scheduleShipping(command);
+  }
+
+   @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'shipping.cancel',
+    queue: 'shipping.cancel.queue'
+  })
+  async handleCancelShippingCommand(command: CancelShippingCommand): Promise<void> {
+    await this.cancelShipping(command);
+  }
+}
+```
+
+```typescript
+// shipping.module.ts
+
+import { Module } from '@nestjs/common';
+import { ShippingService } from './shipping.service';
+import { AmqpModule } from '@golevelup/nestjs-rabbitmq';
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot(),
+    AmqpModule.forRootAsync({
+      useFactory: () => ({
+        exchanges: [
+          {
+            name: 'order.exchange',
+            type: 'topic',
+          },
+        ],
+        uri: process.env.RABBITMQ_URI || 'amqp://guest:guest@localhost:5672',
+        connectionOptions: {
+          heartbeatIntervalInSeconds: 15,
+          reconnectTimeInSeconds: 30,
+        },
+      }),
+  ],
+  providers: [ShippingService],
+})
+export class ShippingModule {}
+```
+
+**Explanation:**
+
+*   The `ShippingService` schedules shipping based on the `ScheduleShippingCommand`.
+*   It simulates shipping scheduling and publishes `shipping.scheduled` or `shipping.scheduling.failed` events to RabbitMQ.
+*   It also implements the `cancelShipping` method for compensating transactions, publishing a `shipping.cancelled` event.
+*   `@RabbitSubscribe` handles consuming shipping messages.
+
+### 7. Saga Orchestrator
+
+This is the heart of the Saga Pattern.  It listens for events and coordinates the actions of the other services.
+
+```typescript
+// saga.orchestrator.service.ts
+
+import { Injectable, Logger } from '@nestjs/common';
+import { OrderService } from './order/order.service';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
+import { ProcessPaymentCommand, CancelPaymentCommand } from './payment/payment.commands';
+import { ReserveInventoryCommand, ReleaseInventoryCommand } from './inventory/inventory.commands';
+import { ScheduleShippingCommand, CancelShippingCommand } from './shipping/shipping.commands';
+import { OrderCreatedEvent } from './order/order.events';
+
+
+@Injectable()
+export class SagaOrchestratorService {
+  private readonly logger = new Logger(SagaOrchestratorService.name);
+
+  constructor(
+    private readonly orderService: OrderService,
+    private readonly amqpConnection: AmqpConnection,
+  ) {}
+
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'order.created',
+    queue: 'order.created.orchestrator.queue'
+  })
+  async handleOrderCreatedEvent(orderCreatedEvent: OrderCreatedEvent): Promise<void> {
+    this.logger.log(`Received order.created event for order ID: ${orderCreatedEvent.orderId}`);
+    //  Initiate the saga - send the payment command
+    const processPaymentCommand: ProcessPaymentCommand = {
+      orderId: orderCreatedEvent.orderId,
+      userId: orderCreatedEvent.userId,
+      amount: orderCreatedEvent.totalAmount,
+    };
+    this.logger.log(`Publishing payment.process command for order ID: ${orderCreatedEvent.orderId}`);
+    await this.amqpConnection.publish<string>('order.exchange', 'payment.process', processPaymentCommand);
+    await this.orderService.updateOrderStatus(orderCreatedEvent.orderId, 'PAYMENT_PROCESSING');
+
+  }
+
+
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'payment.processed',
+    queue: 'payment.processed.orchestrator.queue'
+  })
+  async handlePaymentProcessedEvent(msg: { orderId: string }): Promise<void> {
+    this.logger.log(`Received payment.processed event for order ID: ${msg.orderId}`);
+
+    // Send the reserve inventory command
+    const reserveInventoryCommand: ReserveInventoryCommand = {
+      orderId: msg.orderId,
+      productId: 'product123', // Replace with actual product ID
+      quantity: 1, // Replace with actual quantity
+    };
+    this.logger.log(`Publishing inventory.reserve command for order ID: ${msg.orderId}`);
+    await this.amqpConnection.publish<string>('order.exchange', 'inventory.reserve', reserveInventoryCommand);
+    await this.orderService.updateOrderStatus(msg.orderId, 'INVENTORY_RESERVED');
+  }
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'inventory.reserved',
+    queue: 'inventory.reserved.orchestrator.queue'
+  })
+  async handleInventoryReservedEvent(msg: { orderId: string }): Promise<void> {
+    this.logger.log(`Received inventory.reserved event for order ID: ${msg.orderId}`);
+
+    // Send the schedule shipping command
+    const scheduleShippingCommand: ScheduleShippingCommand = {
+      orderId: msg.orderId,
+      address: '123 Main St', // Replace with actual address
+    };
+    this.logger.log(`Publishing shipping.schedule command for order ID: ${msg.orderId}`);
+    await this.amqpConnection.publish<string>('order.exchange', 'shipping.schedule', scheduleShippingCommand);
+    await this.orderService.updateOrderStatus(msg.orderId, 'SHIPPING_SCHEDULED');
+  }
+
+   @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'shipping.scheduled',
+    queue: 'shipping.scheduled.orchestrator.queue'
+  })
+  async handleShippingScheduledEvent(msg: { orderId: string }): Promise<void> {
+    this.logger.log(`Received shipping.scheduled event for order ID: ${msg.orderId}`);
+    // Saga Completed!
+    await this.orderService.updateOrderStatus(msg.orderId, 'COMPLETED');
+    this.logger.log(`Order ID: ${msg.orderId} saga completed`);
+  }
+
+
+
+  // Failure Handlers
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'payment.failed',
+    queue: 'payment.failed.orchestrator.queue'
+  })
+  async handlePaymentFailedEvent(msg: { orderId: string; reason: string }): Promise<void> {
+    this.logger.error(`Received payment.failed event for order ID: ${msg.orderId}, Reason: ${msg.reason}`);
+    // Cancel the order
+     await this.cancelOrder(msg.orderId, msg.reason);
+  }
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'inventory.reservation.failed',
+    queue: 'inventory.reservation.failed.orchestrator.queue'
+  })
+  async handleInventoryReservationFailedEvent(msg: { orderId: string; reason: string }): Promise<void> {
+    this.logger.error(`Received inventory.reservation.failed event for order ID: ${msg.orderId}, Reason: ${msg.reason}`);
+
+    // Cancel the payment
+    const cancelPaymentCommand: CancelPaymentCommand = {
+      orderId: msg.orderId,
+      reason: msg.reason,
+    };
+    this.logger.log(`Publishing payment.cancel command for order ID: ${msg.orderId}`);
+    await this.amqpConnection.publish<string>('order.exchange', 'payment.cancel', cancelPaymentCommand);
+     await this.cancelOrder(msg.orderId, msg.reason);
+  }
+
+   @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'shipping.scheduling.failed',
+    queue: 'shipping.scheduling.failed.orchestrator.queue'
+  })
+  async handleShippingSchedulingFailedEvent(msg: { orderId: string; reason: string }): Promise<void> {
+    this.logger.error(`Received shipping.scheduling.failed event for order ID: ${msg.orderId}, Reason: ${msg.reason}`);
+
+     const releaseInventoryCommand: ReleaseInventoryCommand = {
+        orderId: msg.orderId,
+        productId: 'product123',
+        quantity: 1
+     }
+      this.logger.log(`Publishing inventory.release command for order ID: ${msg.orderId}`);
+      await this.amqpConnection.publish<string>('order.exchange', 'inventory.release', releaseInventoryCommand);
+       await this.cancelOrder(msg.orderId, msg.reason);
+
+  }
+
+  private async cancelOrder(orderId: string, reason: string): Promise<void> {
+
+    this.logger.log(`Cancelling order ID: ${orderId}, Reason: ${reason}`);
+    const orderCancelledEvent = { orderId: orderId, reason: reason }
+
+    await this.amqpConnection.publish<string>('order.exchange', 'order.cancelled', orderCancelledEvent);
+    await this.orderService.updateOrderStatus(orderId, 'FAILED');
+  }
+
+
+  @RabbitSubscribe({
+    exchange: 'order.exchange',
+    routingKey: 'order.cancelled',
+    queue: 'order.cancelled.orchestrator.queue'
+  })
+  async handleOrderCancelledEvent(msg: { orderId: string, reason: string }): Promise<void> {
+        this.logger.log(`Received order.cancelled event for order ID: ${msg.orderId}, Reason: ${msg.reason}`);
+
+        //Nothing to do other than log (for this demo) -  Order has been cancelled in all services
+  }
+
+
+
+}
+```
+
+```typescript
+// saga.orchestrator.module.ts
+
+import { Module } from '@nestjs/common';
+import { SagaOrchestratorService } from './saga.orchestrator.service';
+import { OrderModule } from './order/order.module';
+import { PaymentModule } from './payment/payment.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { ShippingModule } from './shipping/shipping.module';
+import { AmqpModule } from '@golevelup/nestjs-rabbitmq';
+import { ConfigModule } from '@nestjs/config';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot(),
+    OrderModule,
+    PaymentModule,
+    InventoryModule,
+    ShippingModule,
+     AmqpModule.forRootAsync({
+      useFactory: () => ({
+        exchanges: [
+          {
+            name: 'order.exchange',
+            type: 'topic',
+          },
+        ],
+        uri: process.env.RABBITMQ_URI || 'amqp://guest:guest@localhost:5672',
+        connectionOptions: {
+          heartbeatIntervalInSeconds: 15,
+          reconnectTimeInSeconds: 30,
+        },
+      }),
+    }),
+  ],
+  providers: [SagaOrchestratorService],
+})
+export class SagaOrchestratorModule {}
+```
+
+**Explanation:**
+
+*   The `SagaOrchestratorService` acts as the central orchestrator for the saga.
+*   It listens for events (`order.created`, `payment.processed`, `inventory.reserved`, `shipping.scheduled`, `payment.failed`, `inventory.reservation.failed`, `shipping.scheduling.failed`) and dispatches commands to the appropriate services.
+*   It handles both success and failure scenarios, triggering compensating transactions (e.g., canceling payment, releasing inventory, canceling shipping) when necessary.
+*   The logic inside `handleOrderCancelledEvent` is minimal in this demo, but in a real application you may perform logging or further actions.
+
+### 8. AppModule
+
+Finally, import the necessary modules into your main `AppModule`:
+
+```typescript
+// app.module.ts
+
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+import { SagaOrchestratorModule } from './saga.orchestrator/saga.orchestrator.module';
+import { OrderModule } from './order/order.module';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true, // Makes the ConfigService available in all modules
+    }),
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: async (configService: ConfigService) => ({
+        type: 'postgres',
+        host: configService.get<string>('DATABASE_HOST'),
+        port: configService.get<number>('DATABASE_PORT'),
+        username: configService.get<string>('DATABASE_USER'),
+        password: configService.get<string>('DATABASE_PASSWORD'),
+        database: configService.get<string>('DATABASE_NAME'),
+        entities: [__dirname + '/**/*.entity{.ts,.js}'],
+        synchronize: configService.get<string>('NODE_ENV') === 'development', // Auto-create schema in development.  NEVER DO THIS IN PRODUCTION
+      }),
+      inject: [ConfigService],
+    }),
+    SagaOrchestratorModule,
+    OrderModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
+```
+
+**Important:**
+
+*   Replace the database configuration with your actual PostgreSQL settings in `.env` file:
+
+```
+DATABASE_HOST=localhost
+DATABASE_PORT=5432
+DATABASE_USER=your_user
+DATABASE_PASSWORD=your_password
+DATABASE_NAME=your_database
+```
+
+*   **Do not use `synchronize: true` in production.**  Use database migrations instead!
+
+### 9.  Testing the Saga
+
+To test the saga, you'll need to:
+
+1.  **Start RabbitMQ:**  Make sure your RabbitMQ server is running.
+2.  **Start all the services:** Run each NestJS service (Order, Payment, Inventory, Shipping, Saga Orchestrator).
+3.  **Trigger the Saga:**  Call the `createOrder` method in the `OrderService`.  This will initiate the saga.
+
+You can create a simple controller endpoint in your `OrderModule` to call the `createOrder` method.
+
+```typescript
+// order.controller.ts
+
+import { Controller, Post, Body } from '@nestjs/common';
+import { OrderService } from './order.service';
+
+@Controller('orders')
+export class OrderController {
+  constructor(private readonly orderService: OrderService) {}
+
+  @Post()
+  async createOrder(@Body() body: { userId: string; totalAmount: number }) {
+    return this.orderService.createOrder(body.userId, body.totalAmount);
+  }
+}
+```
+
+Don't forget to add the `OrderController` to the `OrderModule`.
+
+Now, you can make a POST request to `/orders` with a JSON payload like:
+
+```json
+{
+  "userId": "user123",
+  "totalAmount": 100
+}
+```
+
+Observe the logs in each service to see the saga unfold.  You should see events and commands being published and consumed, and the order status being updated. Simulate failure scenarios by tweaking the random number generation in the `PaymentService`, `InventoryService`, and `ShippingService` to force failures.
+
+## Key Considerations
+
+*   **Idempotency:**  Ensure that all operations (especially compensating transactions) are idempotent. This means that if an operation is executed multiple times, it should have the same effect as executing it once. This is crucial for handling retries and avoiding data inconsistencies.  Use a unique ID for each operation and check if the operation has already been processed before executing it.
+*   **Error Handling:**  Implement robust error handling mechanisms.  Use dead-letter queues (DLQs) in RabbitMQ to handle messages that cannot be processed after multiple retries.  Monitor your services for errors and implement alerting.
+*   **Monitoring and Logging:**  Comprehensive logging and monitoring are essential for understanding the behavior of your sagas and identifying potential issues. Track the progress of each saga instance and log all events and commands.  Use distributed tracing to correlate events across services.
+*   **Compensation Complexity:** Compensating transactions can be complex to implement.  Carefully consider all possible failure scenarios and ensure that you have appropriate compensating transactions for each step.

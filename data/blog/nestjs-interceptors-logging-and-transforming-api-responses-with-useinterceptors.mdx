@@ -1,0 +1,266 @@
+---
+title: 'NestJS Interceptors: Logging and Transforming API Responses with @UseInterceptors()'
+date: '2024-02-29'
+lastmod: '2024-02-29'
+tags: ['nestjs', 'interceptors', 'logging', 'api', 'typescript', 'http', 'transformations', 'request-response']
+draft: false
+summary: 'Learn how to use NestJS Interceptors (@UseInterceptors()) to log, transform, and manipulate API responses. Enhance your application with powerful request/response handling, performance monitoring, and data formatting.'
+authors: ['default']
+---
+
+# NestJS Interceptors: Logging and Transforming API Responses with `@UseInterceptors()`
+
+NestJS, a progressive Node.js framework for building efficient and scalable server-side applications, provides a powerful mechanism called **Interceptors**. Interceptors allow you to intercept and modify the control flow of a request, providing a robust way to log, transform data, handle exceptions, and perform other cross-cutting concerns without cluttering your controllers. This blog post delves into how to use NestJS Interceptors, focusing on logging and transforming API responses using the `@UseInterceptors()` decorator.
+
+## What are NestJS Interceptors?
+
+Interceptors, in essence, are classes decorated with `@Injectable()` that implement the `NestInterceptor` interface.  They have access to the `ExecutionContext` (providing details about the current request, handler, and class) and a `CallHandler` (allowing you to invoke the next handler in the chain, typically the controller method). This gives you the power to:
+
+*   **Before a request handler is called:**  Inspect the request, manipulate arguments, and even short-circuit the handler execution entirely.
+*   **After a request handler is called:**  Transform the response data, handle exceptions, log information, and more.
+
+Interceptors are particularly useful for:
+
+*   **Logging:**  Logging request details, execution times, and response data.
+*   **Serialization/Deserialization:**  Transforming data before sending it to the client or before processing it in the controller.
+*   **Exception Handling:**  Globally handling exceptions and providing consistent error responses.
+*   **Caching:**  Caching API responses for improved performance.
+*   **Security:** Implementing authentication and authorization checks.
+
+## Creating a Logging Interceptor
+
+Let's start by creating a simple logging interceptor that logs the request URL, method, and execution time of a controller method.
+
+```typescript
+import { Injectable, NestInterceptor, ExecutionContext, CallHandler, Logger } from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { tap } from 'rxjs/operators';
+
+@Injectable()
+export class LoggingInterceptor implements NestInterceptor {
+  private readonly logger = new Logger(LoggingInterceptor.name); // Use NestJS Logger
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const now = Date.now();
+    const req = context.switchToHttp().getRequest();
+    const method = req.method;
+    const url = req.url;
+
+    this.logger.log(`Incoming request: ${method} ${url}`); // Log incoming request
+
+    return next
+      .handle()
+      .pipe(
+        tap(() => {
+          this.logger.log(`Outgoing response: ${method} ${url} - ${Date.now() - now}ms`); // Log outgoing response
+        }),
+      );
+  }
+}
+```
+
+**Explanation:**
+
+1.  **`@Injectable()`:**  Marks the class as injectable, allowing it to be used as a dependency.
+2.  **`NestInterceptor` interface:**  Requires the implementation of the `intercept` method.
+3.  **`ExecutionContext`:** Provides access to details about the current execution context, such as the request and response objects. We use `context.switchToHttp().getRequest()` to access the HTTP request object.
+4.  **`CallHandler`:**  Represents the next handler in the chain.  Calling `next.handle()` invokes the route handler (controller method).
+5.  **`Observable<any>`:**  The `intercept` method returns an `Observable`. We use `rxjs`'s `tap` operator to execute code after the controller method returns a value.
+6.  **`tap` operator:**  Allows us to perform side effects (like logging) without modifying the stream of data. Inside the `tap`, we log the request method, URL, and the execution time.
+7. **NestJS Logger:** We use NestJS's built-in `Logger` for structured logging, making it easier to filter and analyze logs.  Initializing the logger with `LoggingInterceptor.name` provides context about where the log originated.
+
+## Using the Logging Interceptor with `@UseInterceptors()`
+
+Now that we have our logging interceptor, we can apply it to specific controllers or routes using the `@UseInterceptors()` decorator.
+
+```typescript
+import { Controller, Get, UseInterceptors } from '@nestjs/common';
+import { LoggingInterceptor } from './logging.interceptor';
+
+@Controller('users')
+@UseInterceptors(LoggingInterceptor) // Apply the interceptor to all routes in this controller
+export class UsersController {
+  @Get()
+  findAll(): string {
+    return 'This action returns all users';
+  }
+
+  @Get(':id')
+  findOne(id: string): string {
+    return `This action returns a #${id} user`;
+  }
+}
+```
+
+In this example, `@UseInterceptors(LoggingInterceptor)` is applied to the `UsersController`. This means that the `LoggingInterceptor` will intercept all requests to any route within this controller. You can also apply interceptors to individual routes:
+
+```typescript
+import { Controller, Get, UseInterceptors } from '@nestjs/common';
+import { LoggingInterceptor } from './logging.interceptor';
+
+@Controller('products')
+export class ProductsController {
+  @Get()
+  findAll(): string {
+    return 'This action returns all products';
+  }
+
+  @Get(':id')
+  @UseInterceptors(LoggingInterceptor) // Apply the interceptor only to this route
+  findOne(id: string): string {
+    return `This action returns a #${id} product`;
+  }
+}
+```
+
+In this case, the `LoggingInterceptor` will only intercept requests to the `findOne` route of the `ProductsController`.
+
+## Creating a Transformation Interceptor
+
+Let's create an interceptor that transforms the response data to a more structured format.  Suppose you want to wrap all your API responses in a consistent envelope:
+
+```typescript
+import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+
+interface Response<T> {
+  data: T;
+  timestamp: string;
+  statusCode: number;
+}
+
+@Injectable()
+export class TransformInterceptor<T> implements NestInterceptor<T, Response<T>> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<Response<T>> {
+    return next.handle().pipe(
+      map(data => ({
+        data,
+        timestamp: new Date().toISOString(),
+        statusCode: context.switchToHttp().getResponse().statusCode,
+      })),
+    );
+  }
+}
+```
+
+**Explanation:**
+
+1.  **Generic Type `T`:**  The `TransformInterceptor` is generic, allowing it to transform responses of any type. `NestInterceptor<T, Response<T>>` specifies that it intercepts requests of type `T` and returns a response of type `Response<T>`.
+2.  **`map` operator:**  The `map` operator transforms the data emitted by the observable. In this case, we're wrapping the original data in a new object with a `data` property, a `timestamp`, and the HTTP `statusCode`.
+3.  **`Response<T>` interface:** Defines the structure of our transformed response.
+
+## Using the Transformation Interceptor
+
+Now, let's use the `TransformInterceptor` with `@UseInterceptors()`:
+
+```typescript
+import { Controller, Get, UseInterceptors } from '@nestjs/common';
+import { TransformInterceptor } from './transform.interceptor';
+
+@Controller('articles')
+@UseInterceptors(TransformInterceptor) // Apply the transformation interceptor
+export class ArticlesController {
+  @Get()
+  findAll(): any {
+    return [{ id: 1, title: 'Article 1' }, { id: 2, title: 'Article 2' }];
+  }
+
+  @Get(':id')
+  findOne(id: string): any {
+    return { id: id, title: `Article ${id}` };
+  }
+}
+```
+
+Now, when you make a request to `/articles`, the response will be wrapped in the following format:
+
+```json
+{
+  "data": [
+    { "id": 1, "title": "Article 1" },
+    { "id": 2, "title": "Article 2" }
+  ],
+  "timestamp": "2024-02-29T12:00:00.000Z",
+  "statusCode": 200
+}
+```
+
+## Global Interceptors
+
+You can also register interceptors globally, applying them to every route in your application. This is done in your `main.ts` file (or wherever you bootstrap your NestJS application):
+
+```typescript
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { LoggingInterceptor } from './logging.interceptor';
+import { TransformInterceptor } from './transform.interceptor';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalInterceptors(new LoggingInterceptor(), new TransformInterceptor()); // Register interceptors globally
+  await app.listen(3000);
+}
+bootstrap();
+```
+
+By using `app.useGlobalInterceptors()`, the `LoggingInterceptor` and `TransformInterceptor` will be applied to every route in your application.
+
+## Interceptor Ordering
+
+When using multiple interceptors, the order in which they are applied matters.  Interceptors are executed in the order they are provided to `@UseInterceptors()` or `app.useGlobalInterceptors()`.
+
+For example, if you have a logging interceptor and a transformation interceptor, you might want the logging interceptor to execute *before* the transformation interceptor so that it logs the original response data.
+
+## Exception Handling with Interceptors
+
+Interceptors can also be used for global exception handling. This allows you to catch exceptions thrown by your controllers and format them into a consistent error response.
+
+```typescript
+import { Injectable, NestInterceptor, ExecutionContext, CallHandler, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Observable, throwError } from 'rxjs';
+import { catchError } from 'rxjs/operators';
+
+@Injectable()
+export class ErrorsInterceptor implements NestInterceptor {
+    private readonly logger = new Logger(ErrorsInterceptor.name);
+
+    intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+        return next
+            .handle()
+            .pipe(
+                catchError(err => {
+                    const req = context.switchToHttp().getRequest();
+                    const method = req.method;
+                    const url = req.url;
+
+                    this.logger.error(`Request failed: ${method} ${url} - ${err.message}`, err.stack); // Log error
+
+                    return throwError(() => new HttpException({
+                        statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
+                        message: err.message || 'Internal Server Error',
+                        error: 'Internal Server Error'
+                    }, HttpStatus.INTERNAL_SERVER_ERROR));
+                }),
+            );
+    }
+}
+```
+
+In this interceptor:
+
+*   We use the `catchError` operator to catch any errors thrown by the controller.
+*   We log the error using NestJS `Logger`.
+*   We transform the error into a consistent `HttpException` with a specific status code and message. This ensures that the client receives a standardized error response.
+
+## Best Practices
+
+*   **Keep interceptors focused:**  Each interceptor should have a specific purpose (e.g., logging, transformation, exception handling).
+*   **Use the NestJS Logger:** Use the built-in `Logger` class for consistent and structured logging.
+*   **Consider performance:**  Avoid performing expensive operations within interceptors that could negatively impact application performance.
+*   **Choose the appropriate scope:**  Determine whether to apply interceptors globally, to controllers, or to individual routes based on your needs.
+*   **Test your interceptors:**  Write unit tests to ensure that your interceptors are working correctly and handling edge cases.
+
+## Conclusion
+
+NestJS Interceptors provide a powerful and flexible way to handle cross-cutting concerns in your application. By using `@UseInterceptors()`, you can easily apply interceptors to specific controllers or routes, allowing you to log, transform data, handle exceptions, and more. This promotes cleaner code, reduces duplication, and improves the maintainability of your NestJS applications. Mastering interceptors is crucial for building robust and scalable APIs.

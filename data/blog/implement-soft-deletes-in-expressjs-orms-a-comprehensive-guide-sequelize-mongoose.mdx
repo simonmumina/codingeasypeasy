@@ -1,0 +1,398 @@
+---
+title: 'Implement Soft Deletes in Express.js ORMs: A Comprehensive Guide (Sequelize, Mongoose)'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags: ['express', 'nodejs', 'orm', 'sequelize', 'mongoose', 'soft delete', 'data integrity', 'best practices', 'database design']
+draft: false
+summary: 'Learn how to implement soft deletes in your Express.js applications using popular ORMs like Sequelize and Mongoose. Improve data integrity and avoid permanent data loss with this comprehensive guide and code examples.'
+authors: ['default']
+---
+
+# Implement Soft Deletes in Express.js ORMs: A Comprehensive Guide (Sequelize, Mongoose)
+
+Data is often at the heart of any web application.  While the DELETE operation seems straightforward, permanently removing data can lead to issues down the line.  This is where *soft deletes* come into play.  Soft deletes allow you to mark records as deleted without actually removing them from the database, providing a safety net and preserving data integrity.  This blog post will guide you through implementing soft deletes in your Express.js applications using two popular ORMs: Sequelize (for relational databases) and Mongoose (for MongoDB).
+
+## What are Soft Deletes and Why Use Them?
+
+Instead of physically deleting a record, a soft delete updates a specific column (usually named `deletedAt` or `isDeleted`) to indicate that the record is no longer active.  This approach offers several advantages:
+
+*   **Data Recovery:** Accidentally deleted data can be easily recovered by simply updating the `deletedAt` column back to `null`.
+*   **Auditing:** Soft deletes allow you to track when and by whom a record was "deleted," providing valuable auditing information.
+*   **Referential Integrity:**  When a record is permanently deleted, it can break relationships with other tables. Soft deletes maintain these relationships, preventing errors and ensuring data consistency.
+*   **Data Analysis:**  Deleted data can still be used for historical analysis and reporting.
+*   **Compliance:**  In many industries, data retention policies require that data be kept for a certain period, even after it is no longer actively used. Soft deletes help you meet these requirements.
+
+## Implementing Soft Deletes with Sequelize (PostgreSQL, MySQL, SQLite, etc.)
+
+Sequelize is a powerful ORM for Node.js that supports various relational databases.  Let's explore how to implement soft deletes using Sequelize:
+
+### 1. Adding the `deletedAt` Column
+
+The core of soft deletes lies in adding a `deletedAt` column to your models.  This column will typically be of the `DATE` or `DATEONLY` data type, allowing you to store the timestamp of when the record was soft-deleted.
+
+```javascript
+const { DataTypes } = require('sequelize');
+const sequelize = require('./sequelize'); // Your Sequelize instance
+
+const User = sequelize.define('User', {
+  firstName: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  lastName: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  email: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+    validate: {
+      isEmail: true
+    }
+  },
+  deletedAt: {
+    type: DataTypes.DATE,
+    allowNull: true, // Important: allow null values
+    defaultValue: null
+  }
+}, {
+  paranoid: true, // Enable Sequelize's paranoid option for soft deletes
+  timestamps: true, // Automatically adds createdAt and updatedAt columns
+  underscored: true // Uses snake_case for column names (optional, but good practice)
+});
+
+// (async () => {
+//   await sequelize.sync({ force: true }); // Be careful with force: true in production!
+// })();
+
+module.exports = User;
+```
+
+**Explanation:**
+
+*   **`deletedAt`:** This column stores the date and time when the record was soft-deleted.  The `allowNull: true` and `defaultValue: null` options are crucial, allowing the column to be empty for active records.
+*   **`paranoid: true`:** This Sequelize option is the key to enabling soft deletes.  When `paranoid` is set to `true`, Sequelize will automatically handle the `deletedAt` column.  When you call `destroy()`, Sequelize will update the `deletedAt` column instead of physically deleting the record.
+*   **`timestamps: true`:** This option automatically adds `createdAt` and `updatedAt` columns, which are useful for tracking when records were created and last updated.
+*   **`underscored: true`:** This option, while optional, enforces a snake_case naming convention for your database columns (e.g., `first_name` instead of `firstName`).  This is generally considered good practice for database schema design.
+*   **`sequelize.sync({ force: true })`:**  This is used to synchronize your Sequelize model with the database. **Important:**  `force: true` will drop and recreate the table, so use it with caution in production environments.
+
+### 2. Performing a Soft Delete
+
+To perform a soft delete, simply call the `destroy()` method on your model instance.  Sequelize will automatically update the `deletedAt` column with the current timestamp.
+
+```javascript
+const User = require('./models/user'); // Assuming your model is in ./models/user.js
+
+async function deleteUser(userId) {
+  try {
+    const user = await User.findByPk(userId);
+
+    if (!user) {
+      console.log('User not found.');
+      return;
+    }
+
+    await user.destroy(); // This performs a SOFT DELETE
+
+    console.log('User soft deleted successfully.');
+  } catch (error) {
+    console.error('Error soft deleting user:', error);
+  }
+}
+
+// Example usage:
+// deleteUser(1); // Replace 1 with the actual user ID
+```
+
+### 3. Querying for Active Records
+
+By default, Sequelize's `findAll()` and `findOne()` methods will **only** return records where `deletedAt` is `null`. This is the magic of the `paranoid` option.  However, if you need to query for *all* records, including those that have been soft-deleted, you can use the `paranoid: false` option:
+
+```javascript
+async function getAllUsersIncludingDeleted() {
+  try {
+    const users = await User.findAll({ paranoid: false }); // Get all users, including deleted ones
+
+    console.log('All users:', users);
+  } catch (error) {
+    console.error('Error retrieving users:', error);
+  }
+}
+
+// Example usage:
+// getAllUsersIncludingDeleted();
+```
+
+You can also use Sequelize's `where` clause to explicitly filter by the `deletedAt` column:
+
+```javascript
+async function getOnlyDeletedUsers() {
+    try {
+      const users = await User.findAll({
+        where: {
+          deletedAt: {
+            [Sequelize.Op.ne]: null, // Equivalent to "deletedAt IS NOT NULL"
+          },
+        },
+      });
+
+      console.log('Deleted Users:', users);
+    } catch (error) {
+      console.error('Error retrieving deleted users:', error);
+    }
+}
+
+// Example usage:
+// getOnlyDeletedUsers();
+```
+
+### 4. Restoring a Soft-Deleted Record
+
+To restore a soft-deleted record, simply update the `deletedAt` column to `null`:
+
+```javascript
+async function restoreUser(userId) {
+  try {
+    const user = await User.findByPk(userId, { paranoid: false }); // Find the user, even if deleted
+
+    if (!user) {
+      console.log('User not found.');
+      return;
+    }
+
+    user.deletedAt = null;
+    await user.save(); // Save the changes
+
+    console.log('User restored successfully.');
+  } catch (error) {
+    console.error('Error restoring user:', error);
+  }
+}
+
+// Example usage:
+// restoreUser(1); // Replace 1 with the actual user ID
+```
+
+**Important Considerations for Sequelize:**
+
+*   **Unique Constraints:**  If you have unique constraints on your model (e.g., on the `email` column), you might need to adjust them to account for soft-deleted records.  Consider adding a composite unique constraint that includes the `deletedAt` column, allowing the same email address to be used for multiple soft-deleted users.
+*   **Associations:**  When working with associations, be mindful of how soft deletes affect your queries.  You might need to use `paranoid: false` or explicitly filter by `deletedAt` to retrieve associated records.
+
+## Implementing Soft Deletes with Mongoose (MongoDB)
+
+Mongoose is a popular ORM for MongoDB, a NoSQL document database. The process for implementing soft deletes in Mongoose is similar to Sequelize, but with some key differences due to the nature of MongoDB.
+
+### 1. Adding the `deletedAt` Field
+
+Just like with Sequelize, the first step is to add a `deletedAt` field to your schema.
+
+```javascript
+const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+  firstName: {
+    type: String,
+    required: true
+  },
+  lastName: {
+    type: String,
+    required: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    validate: {
+      validator: (email) => {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      },
+      message: 'Invalid email address'
+    }
+  },
+  deletedAt: {
+    type: Date,
+    default: null // Important: allow null values
+  }
+}, {
+  timestamps: true // Automatically adds createdAt and updatedAt fields
+});
+
+const User = mongoose.model('User', UserSchema);
+
+module.exports = User;
+```
+
+**Explanation:**
+
+*   **`deletedAt`:**  Similar to Sequelize, this field stores the date and time when the record was soft-deleted. The `default: null` option is important to ensure that new records are not marked as deleted.
+*   **`timestamps: true`:** Mongoose automatically adds `createdAt` and `updatedAt` fields to your documents, which are useful for tracking creation and modification times.
+
+### 2. Creating a Pre-Delete Middleware
+
+Mongoose allows you to define middleware that executes before or after certain operations. We can use a `pre('deleteOne', ...)` middleware to intercept the `deleteOne` operation and perform a soft delete instead.  We also need to intercept other delete methods, such as `deleteMany` and `remove`. For simplicity, let's focus on `deleteOne` and `deleteMany` in this example.
+
+```javascript
+const mongoose = require('mongoose');
+
+const UserSchema = new mongoose.Schema({
+  firstName: {
+    type: String,
+    required: true
+  },
+  lastName: {
+    type: String,
+    required: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    validate: {
+      validator: (email) => {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+      },
+      message: 'Invalid email address'
+    }
+  },
+  deletedAt: {
+    type: Date,
+    default: null // Important: allow null values
+  }
+}, {
+  timestamps: true // Automatically adds createdAt and updatedAt fields
+});
+
+// Pre-delete middleware for soft delete
+UserSchema.pre('deleteOne', async function (next) {
+  try {
+    // 'this' refers to the query object
+    const docToUpdate = await this.model.findOne(this.getFilter()); // getFilter() gets the filter used for deleteOne
+    if(docToUpdate){
+      docToUpdate.deletedAt = new Date();
+      await docToUpdate.save();
+    }
+    next(); // Proceed to the actual deletion (which will now be skipped due to the save)
+  } catch (error) {
+    return next(error);
+  }
+});
+
+UserSchema.pre('deleteMany', async function (next) {
+  try {
+    await this.model.updateMany(this.getFilter(), { $set: { deletedAt: new Date() } });
+    next();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+
+const User = mongoose.model('User', UserSchema);
+
+module.exports = User;
+```
+
+**Explanation:**
+
+*   **`pre('deleteOne', ...)`:** This middleware is executed *before* a `deleteOne` operation is performed on the `User` model.
+*   **`this` context:** Inside the middleware, `this` refers to the query object, allowing us to access the query parameters.
+*   **`this.getFilter()`:**  Gets the filter parameters passed to deleteOne
+*   **`docToUpdate.deletedAt = new Date()`:**  Sets the `deletedAt` field to the current timestamp, effectively marking the document as soft-deleted.
+*   **`await docToUpdate.save()`:** Saves the changes to the document, preventing the actual deletion.
+*   **`next()`:** Calls the next middleware in the chain. In this case, it would proceed to the `deleteOne` operation, but because we've already saved the changes, nothing will be deleted.
+*   **Error Handling:** The `try...catch` block ensures that any errors during the process are caught and passed to the next middleware.
+*   **`pre('deleteMany', ...)`:** This middleware handles soft deleting multiple documents at once using `updateMany`.
+
+### 3. Querying for Active Records
+
+To query for only active (non-deleted) records, add a filter to your query that excludes documents where `deletedAt` is not null.
+
+```javascript
+const User = require('./models/user');
+
+async function getAllActiveUsers() {
+  try {
+    const users = await User.find({ deletedAt: null }); // Only get users where deletedAt is null
+    console.log('Active users:', users);
+  } catch (error) {
+    console.error('Error retrieving active users:', error);
+  }
+}
+
+// Example usage:
+// getAllActiveUsers();
+```
+
+To query for all records, including soft-deleted ones, simply omit the `deletedAt` filter:
+
+```javascript
+async function getAllUsersIncludingDeleted() {
+    try {
+      const users = await User.find({}); // Get all users, regardless of deletedAt
+      console.log('All users (including deleted):', users);
+    } catch (error) {
+      console.error('Error retrieving all users:', error);
+    }
+}
+
+// Example usage:
+// getAllUsersIncludingDeleted();
+```
+
+To retrieve only the deleted users, use the following:
+
+```javascript
+async function getOnlyDeletedUsers() {
+  try {
+    const users = await User.find({ deletedAt: { $ne: null } }); // Get only users where deletedAt is NOT null
+    console.log('Deleted users:', users);
+  } catch (error) {
+    console.error('Error retrieving deleted users:', error);
+  }
+}
+
+// Example usage:
+// getOnlyDeletedUsers();
+```
+
+### 4. Restoring a Soft-Deleted Record
+
+To restore a soft-deleted record, simply set the `deletedAt` field to `null`:
+
+```javascript
+const User = require('./models/user');
+
+async function restoreUser(userId) {
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      console.log('User not found.');
+      return;
+    }
+
+    user.deletedAt = null;
+    await user.save(); // Save the changes
+
+    console.log('User restored successfully.');
+  } catch (error) {
+    console.error('Error restoring user:', error);
+  }
+}
+
+// Example usage:
+// restoreUser('user_id_here'); // Replace 'user_id_here' with the actual user ID
+```
+
+**Important Considerations for Mongoose:**
+
+*   **Middleware Placement:**  Ensure your pre-delete middleware is defined *before* you compile your Mongoose model.
+*   **Unique Indexes:** Similar to Sequelize, be aware of unique indexes on your schema. Consider creating a partial index that only applies to documents where `deletedAt` is `null`, allowing the same email address to be used for multiple soft-deleted users.
+*   **Other Delete Operations:**  Consider also adding `pre` hooks for `findOneAndDelete`, `findByIdAndDelete`, and `remove` to ensure that soft deletes are consistently applied. The exact implementation will depend on your application's needs.  The  `deleteMany` example above can be adapted.
+*   **Aggregation Pipelines:** When working with complex aggregation pipelines, you'll need to ensure that your pipeline stages correctly filter out soft-deleted documents.
+*   **Transactions:**  If you are using Mongoose transactions, make sure your soft delete operations are included within the transaction to maintain data consistency.
+
+## Conclusion
+
+Implementing soft deletes is a valuable practice for improving data integrity and providing a safety net against accidental data loss in your Express.js applications.  By using ORMs like Sequelize and Mongoose, you can easily integrate soft deletes into your database models with minimal code changes. Remember to carefully consider the implications for your unique constraints, associations (in Sequelize), middleware placement (in Mongoose) and query patterns to ensure that your soft delete implementation works seamlessly with your application. This guide provides a solid foundation for implementing robust and reliable soft delete functionality.  Always remember to test your implementation thoroughly!

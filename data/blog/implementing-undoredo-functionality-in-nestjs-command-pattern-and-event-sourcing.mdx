@@ -1,0 +1,349 @@
+---
+title: 'Implementing Undo/Redo Functionality in NestJS: Command Pattern & Event Sourcing'
+date: '2024-10-26'
+lastmod: '2024-10-26'
+tags: ['nestjs', 'undo redo', 'command pattern', 'event sourcing', 'typescript', 'backend development', 'cqrs', 'architectural patterns']
+draft: false
+summary: 'Learn how to implement robust undo/redo functionality in your NestJS applications using the Command Pattern and Event Sourcing. This comprehensive guide provides step-by-step instructions, code examples, and best practices for building a resilient and user-friendly experience.'
+authors: ['default']
+---
+
+# Implementing Undo/Redo Functionality in NestJS: Command Pattern & Event Sourcing
+
+Undo/Redo functionality is a crucial feature for many applications, allowing users to easily correct mistakes and experiment with different actions.  Implementing it robustly can be challenging. This guide explores how to implement undo/redo functionality in NestJS using the Command Pattern and Event Sourcing, providing a clear, step-by-step approach with code examples.  We'll cover the necessary components and considerations for building a solid and maintainable solution.
+
+## Understanding the Core Concepts
+
+Before diving into the code, let's define the core concepts we'll be using:
+
+*   **Command Pattern:**  A behavioral design pattern that encapsulates a request as an object, thereby allowing you to parameterize clients with queues, requests, and operations.  In essence, it separates the object that invokes the operation (the client) from the object that knows how to perform the operation (the receiver).  This decoupling is key for undo/redo.
+*   **Event Sourcing:** A design pattern where the state of an application is determined by a sequence of events. Instead of storing the current state directly, you store a log of all changes (events).  The current state can be reconstructed by replaying these events in order.  This provides a historical record and simplifies undo/redo immensely.
+*   **NestJS:** A progressive Node.js framework for building efficient, reliable, and scalable server-side applications.  It leverages TypeScript and provides a structured architecture, making it ideal for building complex systems.
+
+## Why Combine Command Pattern and Event Sourcing for Undo/Redo?
+
+Combining these patterns offers several advantages:
+
+*   **Clear Separation of Concerns:** The Command Pattern handles the execution and un-execution of operations, while Event Sourcing manages the historical record of those operations.
+*   **Simplified Undo/Redo Logic:** Event Sourcing provides a chronological log of events, making it easy to revert to previous states by undoing (reversing) events and replaying the remaining ones.
+*   **Audit Trail:** Event Sourcing creates an immutable audit trail of all changes made to the system.
+*   **Flexibility:** The system becomes more adaptable to changes and new requirements.
+
+## Setting Up Your NestJS Project
+
+First, ensure you have NestJS installed:
+
+```bash
+npm install -g @nestjs/cli
+```
+
+Create a new NestJS project:
+
+```bash
+nest new undo-redo-example
+cd undo-redo-example
+```
+
+## Defining the Command Interface
+
+Let's start by defining a generic `Command` interface:
+
+```typescript
+// src/commands/command.interface.ts
+export interface Command {
+  execute(): Promise<void>;
+  undo(): Promise<void>;
+}
+```
+
+This interface defines the `execute` and `undo` methods that all commands will implement.
+
+## Implementing Concrete Commands
+
+Now, let's create a concrete command. For this example, we'll simulate a simple document editing scenario where we can add text.
+
+```typescript
+// src/commands/add-text.command.ts
+import { Command } from './command.interface';
+import { EventBus } from '@nestjs/cqrs'; // Import EventBus
+
+interface DocumentState {
+  text: string;
+}
+
+export class AddTextCommand implements Command {
+  private readonly textToAdd: string;
+  private readonly documentState: DocumentState;
+  private readonly originalText: string;
+
+  constructor(private readonly eventBus: EventBus, documentState: DocumentState, textToAdd: string) {
+    this.documentState = documentState;
+    this.textToAdd = textToAdd;
+    this.originalText = documentState.text;
+  }
+
+  async execute(): Promise<void> {
+    this.documentState.text += this.textToAdd;
+    this.eventBus.publish(new TextAddedEvent(this.textToAdd)); // Publish the event
+  }
+
+  async undo(): Promise<void> {
+    this.documentState.text = this.originalText; // Revert to original state
+    this.eventBus.publish(new TextRemovedEvent(this.textToAdd)); // Publish the "undo" event
+  }
+}
+
+// src/events/text-added.event.ts
+export class TextAddedEvent {
+    constructor(public readonly text: string) {}
+}
+
+// src/events/text-removed.event.ts
+export class TextRemovedEvent {
+    constructor(public readonly text: string) {}
+}
+
+```
+
+Key improvements in the `AddTextCommand`:
+
+*   **Event Publishing:**  The `execute` and `undo` methods now publish events using the NestJS `EventBus`.  This is crucial for the event sourcing aspect. We created two events, `TextAddedEvent` and `TextRemovedEvent`, to represent adding and removing text.
+*   **DocumentState:** Passing the `documentState` directly to the command allows the command to modify the state directly, simplifying the logic and avoiding unnecessary dependencies.  Make sure the `documentState` is passed as an object so changes are reflected directly.
+*   **Original Text:**  Storing `originalText` inside the command before execution allows for a reliable way to undo.
+
+## Implementing the Command History and Invoker
+
+Now we need a way to store the executed commands and an invoker to execute them.
+
+```typescript
+// src/services/command-history.service.ts
+import { Injectable } from '@nestjs/common';
+import { Command } from '../commands/command.interface';
+
+@Injectable()
+export class CommandHistoryService {
+  private history: Command[] = [];
+  private redoStack: Command[] = [];
+
+  execute(command: Command): Promise<void> {
+    return command.execute().then(() => {
+      this.history.push(command);
+      this.redoStack = []; // Clear redo stack after a new command
+    });
+  }
+
+  undo(): Promise<void> {
+    const command = this.history.pop();
+    if (!command) {
+      return Promise.resolve(); // Nothing to undo
+    }
+    return command.undo().then(() => {
+      this.redoStack.push(command);
+    });
+  }
+
+  redo(): Promise<void> {
+    const command = this.redoStack.pop();
+    if (!command) {
+      return Promise.resolve(); // Nothing to redo
+    }
+    return command.execute().then(() => {
+      this.history.push(command);
+    });
+  }
+
+  getHistory(): Command[] {
+    return [...this.history]; // Return a copy to prevent direct modification
+  }
+}
+```
+
+Explanation:
+
+*   `CommandHistoryService` is responsible for managing the command history (the `history` array) and the redo stack (`redoStack`).
+*   `execute(command: Command)` executes the command, adds it to the history, and clears the redo stack.
+*   `undo()` retrieves the last command from the history, undoes it, and pushes it onto the redo stack.
+*   `redo()` retrieves the last command from the redo stack, executes it, and pushes it onto the history.
+
+## Event Sourcing: Storing and Replaying Events
+
+Next, we need to implement the event sourcing part.  We'll create a simple event store in memory for this example.  In a real-world application, you would use a persistent store like a database.
+
+```typescript
+// src/services/event-store.service.ts
+import { Injectable } from '@nestjs/common';
+import { TextAddedEvent } from '../events/text-added.event';
+import { TextRemovedEvent } from '../events/text-removed.event';
+
+type Event = TextAddedEvent | TextRemovedEvent; // Add more event types as needed
+
+@Injectable()
+export class EventStoreService {
+    private events: Event[] = [];
+
+    storeEvent(event: Event): void {
+        this.events.push(event);
+    }
+
+    getEvents(): Event[] {
+        return [...this.events]; // Return a copy
+    }
+
+    clearEvents(): void {
+        this.events = [];
+    }
+}
+```
+
+Key improvements:
+
+*   **Type Safety:** The `Event` type is defined to ensure type safety.
+*   **Clear Events Method**: Clearing events is useful when you want to reset the event store, such as for testing.
+*   **Copy of Event Array**: Returning a copy of the event array ensures that the original events are not accidentally mutated outside of this service.
+
+## Putting It All Together: The Controller and Module
+
+Now, let's create a controller to expose the undo/redo functionality and a module to wire everything together.
+
+```typescript
+// src/app.controller.ts
+import { Controller, Post, Get, Body } from '@nestjs/common';
+import { CommandHistoryService } from './services/command-history.service';
+import { AddTextCommand } from './commands/add-text.command';
+import { EventBus } from '@nestjs/cqrs';
+import { EventStoreService } from './services/event-store.service';
+
+interface DocumentState {
+  text: string;
+}
+
+@Controller()
+export class AppController {
+  private documentState: DocumentState = { text: '' }; // In-memory document state
+
+  constructor(
+    private readonly commandHistoryService: CommandHistoryService,
+    private readonly eventBus: EventBus,
+    private readonly eventStoreService: EventStoreService,
+  ) {}
+
+  @Post('addText')
+  async addText(@Body('text') text: string): Promise<void> {
+    const command = new AddTextCommand(this.eventBus, this.documentState, text);
+    await this.commandHistoryService.execute(command);
+    return;
+  }
+
+  @Post('undo')
+  async undo(): Promise<void> {
+    await this.commandHistoryService.undo();
+    return;
+  }
+
+  @Post('redo')
+  async redo(): Promise<void> {
+    await this.commandHistoryService.redo();
+    return;
+  }
+
+  @Get('text')
+  getText(): string {
+    return this.documentState.text;
+  }
+
+  @Get('events')
+  getEvents() : any[] {
+      return this.eventStoreService.getEvents();
+  }
+
+  @Post('reset')
+    resetState(): void {
+        this.documentState.text = '';
+        this.eventStoreService.clearEvents();
+    }
+}
+
+// src/app.module.ts
+import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
+import { CommandHistoryService } from './services/command-history.service';
+import { AddTextCommand } from './commands/add-text.command';
+import { CqrsModule } from '@nestjs/cqrs';
+import { EventStoreService } from './services/event-store.service';
+
+@Module({
+  imports: [CqrsModule],
+  controllers: [AppController],
+  providers: [CommandHistoryService, AddTextCommand, EventStoreService],
+})
+export class AppModule {}
+```
+
+Changes in `AppController` and `AppModule`:
+
+*   **Injecting `EventBus` and `EventStoreService`:** The controller now injects the `EventBus` from `@nestjs/cqrs` and the `EventStoreService`.
+*   **Publishing Events:** The `addText` method now publishes a `TextAddedEvent` when text is added. The `undo` method publishes `TextRemovedEvent`.
+*   **Reset Endpoint:** A new `reset` endpoint clears the text and clears the event history for testing and demonstration purposes.
+*   **Getting Events Endpoint:** Added a new endpoint to retrieve all events from the event store for inspection.
+*   **CqrsModule:** The `CqrsModule` must be imported to utilize the `EventBus` functionality.
+
+## Testing the Undo/Redo Functionality
+
+1.  Start the NestJS application: `npm run start:dev`
+2.  Use a tool like Postman or `curl` to send requests:
+
+    *   **Add Text:**
+        ```bash
+        curl -X POST -H "Content-Type: application/json" -d '{"text": "Hello"}' http://localhost:3000/addText
+        ```
+        ```bash
+        curl -X POST -H "Content-Type: application/json" -d '{"text": " World!"}' http://localhost:3000/addText
+        ```
+
+    *   **Get Text:**
+        ```bash
+        curl http://localhost:3000/text
+        ```
+        (Should return "Hello World!")
+
+    *   **Undo:**
+        ```bash
+        curl -X POST http://localhost:3000/undo
+        ```
+        ```bash
+        curl http://localhost:3000/text
+        ```
+        (Should return "Hello")
+
+    *   **Redo:**
+        ```bash
+        curl -X POST http://localhost:3000/redo
+        ```
+        ```bash
+        curl http://localhost:3000/text
+        ```
+        (Should return "Hello World!")
+    *   **Get Events:**
+        ```bash
+        curl http://localhost:3000/events
+        ```
+        (Should return the stored event list)
+
+    *   **Reset:**
+        ```bash
+        curl -X POST http://localhost:3000/reset
+        ```
+
+## Considerations and Improvements
+
+*   **Persistence:**  Replace the in-memory event store with a persistent storage solution like a database (e.g., PostgreSQL, MongoDB) for real-world applications.  Consider using a dedicated Event Store database like EventStoreDB for optimized performance and features.
+*   **Serialization/Deserialization:** Implement proper serialization and deserialization for events when storing them in a database.
+*   **Error Handling:** Add robust error handling and logging throughout the application.
+*   **Scalability:** Consider using a message queue (e.g., RabbitMQ, Kafka) for distributing events in a distributed environment.
+*   **Complex Commands:**  For more complex operations, break them down into smaller, more manageable commands.
+*   **Snapshots:**  Periodically take snapshots of the application state to reduce the time required to replay events from the beginning of the event log.
+*   **Testing:**  Write comprehensive unit and integration tests to ensure the correctness of the undo/redo functionality.  Mock the event bus and other dependencies to isolate the components being tested.
+
+## Conclusion
+
+This guide has demonstrated how to implement undo/redo functionality in NestJS using the Command Pattern and Event Sourcing. By separating concerns and leveraging the power of event sourcing, you can create a robust, maintainable, and user-friendly application.  Remember to adapt this example to your specific needs and consider the best practices for persistence, error handling, and scalability as you build your application. This example provides a solid foundation for implementing sophisticated undo/redo capabilities in your NestJS projects. Remember to tailor the concepts to your particular use case and prioritize robust testing.
