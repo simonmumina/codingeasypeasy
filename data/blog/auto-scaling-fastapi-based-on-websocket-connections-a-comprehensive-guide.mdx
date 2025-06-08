@@ -1,0 +1,460 @@
+---
+title: 'Auto-Scaling FastAPI Based on WebSocket Connections: A Comprehensive Guide'
+date: '2024-10-26'
+lastmod: '2024-10-26'
+tags: ['fastapi', 'websockets', 'autoscaling', 'kubernetes', 'uvicorn', 'gunicorn', 'cloud', 'performance']
+draft: false
+summary: 'Learn how to auto-scale your FastAPI application based on the number of active WebSocket connections. This guide covers different strategies, including using Kubernetes Horizontal Pod Autoscaling (HPA) with custom metrics, and explores the underlying technologies like Uvicorn and Gunicorn. Improve performance and reliability of your real-time applications.'
+authors: ['default']
+---
+
+# Auto-Scaling FastAPI Based on WebSocket Connections: A Comprehensive Guide
+
+Real-time applications powered by WebSockets are becoming increasingly common. From collaborative document editing to live data dashboards, WebSockets offer a persistent connection that allows for instant bidirectional communication between the server and clients. However, scaling these applications efficiently, especially when dealing with a large number of concurrent WebSocket connections, can be challenging.
+
+This blog post provides a comprehensive guide on how to auto-scale your FastAPI application based on the number of active WebSocket connections. We'll explore different strategies, focusing on practical implementation and best practices.
+
+## Why Auto-Scale Based on WebSocket Connections?
+
+Traditional auto-scaling methods often rely on CPU utilization or memory consumption. However, in WebSocket applications, these metrics might not accurately reflect the load. A server might have plenty of CPU and memory available, yet be overwhelmed by a large number of active WebSocket connections, leading to performance degradation and dropped connections.
+
+Scaling based on the number of active connections allows you to proactively increase resources when your application is approaching its connection capacity, ensuring a smooth user experience.
+
+## Strategies for Auto-Scaling FastAPI WebSockets
+
+Several strategies can be employed for auto-scaling FastAPI WebSockets. Here are a few common approaches:
+
+1. **Manual Scaling:** Manually monitoring the number of WebSocket connections and adjusting the number of server instances accordingly. This approach is tedious and not ideal for dynamic workloads.
+2. **Cloud Provider Managed Scaling (e.g., AWS ECS, Google Cloud Run, Azure Container Apps):**  Leveraging the auto-scaling capabilities offered by cloud providers.  These often rely on metrics like CPU and memory but can be extended with custom metrics.
+3. **Kubernetes Horizontal Pod Autoscaling (HPA) with Custom Metrics:** This is arguably the most robust and flexible approach, especially for complex deployments.  We'll focus on this strategy in detail.
+
+## Kubernetes Horizontal Pod Autoscaling (HPA) with Custom Metrics
+
+Kubernetes HPA allows you to automatically scale the number of Pods (running instances of your application) based on observed metrics. Using custom metrics, we can instruct HPA to scale based on the number of active WebSocket connections.
+
+Here's a breakdown of the steps involved:
+
+1. **Expose WebSocket Connection Metrics:**  We need to collect and expose the number of active WebSocket connections from our FastAPI application.
+2. **Monitor the Metrics:**  A monitoring system (e.g., Prometheus) needs to collect these metrics.
+3. **Configure Kubernetes HPA:**  Configure HPA to scale based on the metrics collected by Prometheus.
+
+### Step 1: Exposing WebSocket Connection Metrics in FastAPI
+
+First, we need to modify our FastAPI application to track and expose the number of active WebSocket connections. We can use a global variable or a more sophisticated in-memory store to keep track of this.
+
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI()
+
+# Global variable to track active WebSocket connections
+active_connections = set()
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: int):
+    await websocket.accept()
+    active_connections.add(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"Client #{client_id} says: {data}")
+    except WebSocketDisconnect:
+        active_connections.remove(websocket)
+
+
+@app.get("/")
+async def get():
+    return HTMLResponse("""
+    <h1>WebSocket Example</h1>
+    <script>
+      var ws = new WebSocket("ws://localhost:8000/ws/1"); // Replace with your URL
+      ws.onopen = function() {
+        console.log("Connected to WebSocket");
+      };
+      ws.onmessage = function(event) {
+        console.log("Received: " + event.data);
+      };
+      ws.onclose = function() {
+        console.log("Disconnected from WebSocket");
+      };
+      function sendMessage() {
+        ws.send("Hello from the client!");
+      }
+    </script>
+    <button onclick="sendMessage()">Send Message</button>
+    """)
+
+# Endpoint to expose the number of active connections
+@app.get("/metrics")
+async def metrics():
+    return {"active_connections": len(active_connections)}
+```
+
+**Explanation:**
+
+*   We use a `set` called `active_connections` to store active WebSocket connections.  A set is used to avoid duplicate entries, optimizing the `add` and `remove` operations.
+*   When a WebSocket connection is established, we add it to the `active_connections` set.
+*   When a WebSocket connection is closed (due to `WebSocketDisconnect`), we remove it from the `active_connections` set.
+*   We create a `/metrics` endpoint that returns the number of active connections as a JSON object.  This endpoint is crucial for Prometheus to scrape the metrics.
+
+**Important Considerations:**
+
+*   **Concurrency:** In a production environment, you might need to use a more robust concurrency mechanism (e.g., `asyncio.Lock` or `threading.Lock`) to protect the `active_connections` set from race conditions.
+*   **Memory Management:** For very large numbers of connections, consider using a more efficient data structure or a dedicated in-memory database (e.g., Redis) to store the active connections.  This is especially important if the `active_connections` object grows significantly, potentially impacting garbage collection performance.
+*   **Uvicorn Configuration:**  Ensure your Uvicorn configuration is optimized for handling many concurrent connections.  Adjust the number of worker processes and threads accordingly.  Using `uvicorn main:app --workers 4 --reload` for development and a more robust configuration (e.g., using Gunicorn as a process manager) for production is recommended.
+
+### Step 2: Monitoring with Prometheus
+
+Prometheus is a popular open-source monitoring and alerting toolkit. We'll use it to scrape the `/metrics` endpoint and collect the number of active WebSocket connections.
+
+1.  **Install and Configure Prometheus:**  Follow the official Prometheus documentation to install and configure Prometheus on your Kubernetes cluster or elsewhere.
+
+2.  **Configure Prometheus to Scrape the `/metrics` Endpoint:**  Add a scrape configuration to your `prometheus.yml` file to target your FastAPI application. Here's an example:
+
+    ```yaml
+    scrape_configs:
+      - job_name: 'fastapi-websocket'
+        static_configs:
+          - targets: ['your-fastapi-service-name:8000']  # Replace with your service name and port
+    ```
+
+    Replace `your-fastapi-service-name:8000` with the actual service name and port of your FastAPI application in your Kubernetes cluster. If running locally, replace `your-fastapi-service-name` with `localhost`.
+
+3.  **Verify Metric Collection:**  After restarting Prometheus, you should be able to query the `active_connections` metric in the Prometheus UI. You might need to expose the prometheus UI to your browser or configure port forwarding. Query: `active_connections`
+
+### Step 3: Configuring Kubernetes HPA
+
+Now that Prometheus is collecting the WebSocket connection metrics, we can configure HPA to scale our deployment based on these metrics.
+
+1.  **Create a Custom Metrics API:**  Kubernetes needs a way to access the metrics collected by Prometheus. We can use the Prometheus Adapter for Kubernetes to expose these metrics through the Kubernetes API.
+
+    *   **Install Prometheus Adapter:** Follow the installation instructions in the Prometheus Adapter documentation.  Typically this involves applying several YAML files to your cluster.
+
+    *   **Configure Metric Discovery:**  Create a `metric-server-resources.yaml` file (or a similar name) with the following configuration to tell the Prometheus Adapter how to discover and expose the `active_connections` metric:
+
+        ```yaml
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: prometheus-adapter
+          namespace: custom-metrics
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: prometheus-adapter
+          template:
+            metadata:
+              labels:
+                app: prometheus-adapter
+            spec:
+              containers:
+                - name: prometheus-adapter
+                  image: directxman12/k8s-prometheus-adapter:v0.12.0
+                  args:
+                    - "--prometheus-url=http://prometheus.default.svc.cluster.local" # Update with your prometheus address
+                    - "--metrics-relabeling-config=/etc/adapter/config/relabel_config.yaml"
+                  volumeMounts:
+                    - name: config-volume
+                      mountPath: /etc/adapter/config
+                      readOnly: true
+              volumes:
+                - name: config-volume
+                  configMap:
+                    name: adapter-config
+
+        ---
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: adapter-config
+          namespace: custom-metrics
+        data:
+          config.yaml: |
+            rules:
+            - seriesQuery: 'active_connections' # The Prometheus metric name
+              resources:
+                overrides:
+                  kubernetes.io/pod:
+                    resource: pod
+              name:
+                asMatch: "active_connections" #Name the custom metric to be used in HPA
+              metricsQuery: 'avg(active_connections)' # Aggregate the metric
+        ```
+
+        Apply this configuration:  `kubectl apply -f metric-server-resources.yaml -n custom-metrics`  (You may need to create the `custom-metrics` namespace first).
+
+        **Important Notes:**
+          * Ensure the `--prometheus-url` is correct.  It should point to your Prometheus instance *inside* the Kubernetes cluster.  Use `kubectl get svc -n <prometheus_namespace>` to find the correct service name.  For example:  `http://prometheus-server.monitoring.svc.cluster.local`.
+          * The `seriesQuery` should match the exact name of the metric in Prometheus.
+
+2.  **Create an HPA Configuration:** Create an HPA configuration file (e.g., `hpa.yaml`) to define the scaling rules based on the custom metric:
+
+    ```yaml
+    apiVersion: autoscaling/v2beta2
+    kind: HorizontalPodAutoscaler
+    metadata:
+      name: fastapi-websocket-hpa
+    spec:
+      scaleTargetRef:
+        apiVersion: apps/v1
+        kind: Deployment
+        name: fastapi-websocket-deployment  # Replace with your deployment name
+      minReplicas: 1
+      maxReplicas: 10  # Set your maximum number of replicas
+      metrics:
+      - type: External
+        external:
+          metric:
+            name: active_connections # Name of custom metric used in configMap
+            selector:
+              matchLabels:
+                app: fastapi-websocket # Ensure labels match your pods
+          target:
+            type: AverageValue
+            averageValue: 5 # Target number of websocket connections per pod
+    ```
+
+    Replace `fastapi-websocket-deployment` with the name of your Kubernetes deployment.  Adjust `minReplicas`, `maxReplicas`, and `averageValue` (the target number of WebSocket connections per pod) according to your application's needs and resource constraints.  Also, ensure the `matchLabels` in the selector of the `external` metric match the labels on your pods.
+
+3.  **Apply the HPA Configuration:** Apply the HPA configuration:
+
+    ```bash
+    kubectl apply -f hpa.yaml
+    ```
+
+4.  **Verify HPA:**  Check the status of the HPA:
+
+    ```bash
+    kubectl get hpa fastapi-websocket-hpa
+    ```
+
+    The output should show the target metric and the current number of replicas.
+
+## Complete Example (with Deployment)
+
+Here's a complete example, including the FastAPI code, a basic Kubernetes Deployment, and the HPA configuration:
+
+**1. `main.py` (FastAPI Application - Same as above):**
+
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI()
+
+# Global variable to track active WebSocket connections
+active_connections = set()
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: int):
+    await websocket.accept()
+    active_connections.add(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"Client #{client_id} says: {data}")
+    except WebSocketDisconnect:
+        active_connections.remove(websocket)
+
+
+@app.get("/")
+async def get():
+    return HTMLResponse("""
+    <h1>WebSocket Example</h1>
+    <script>
+      var ws = new WebSocket("ws://localhost:8000/ws/1"); // Replace with your URL
+      ws.onopen = function() {
+        console.log("Connected to WebSocket");
+      };
+      ws.onmessage = function(event) {
+        console.log("Received: " + event.data);
+      };
+      ws.onclose = function() {
+        console.log("Disconnected from WebSocket");
+      };
+      function sendMessage() {
+        ws.send("Hello from the client!");
+      }
+    </script>
+    <button onclick="sendMessage()">Send Message</button>
+    """)
+
+# Endpoint to expose the number of active connections
+@app.get("/metrics")
+async def metrics():
+    return {"active_connections": len(active_connections)}
+```
+
+**2. `Dockerfile`:**
+
+```dockerfile
+FROM python:3.9-slim-buster
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+**3. `requirements.txt`:**
+
+```
+fastapi
+uvicorn
+websockets
+```
+
+**4. `deployment.yaml`:**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-websocket-deployment
+  labels:
+    app: fastapi-websocket
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fastapi-websocket
+  template:
+    metadata:
+      labels:
+        app: fastapi-websocket
+    spec:
+      containers:
+        - name: fastapi-websocket
+          image: your-docker-image:latest  # Replace with your Docker image
+          ports:
+            - containerPort: 8000
+          livenessProbe:  # Added for health checks
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          readinessProbe: # Added for health checks
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+```
+
+**5. `service.yaml`:**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: fastapi-websocket-service
+spec:
+  selector:
+    app: fastapi-websocket
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP  # Change to LoadBalancer or NodePort as needed
+```
+
+**6. `hpa.yaml`:**  (Same as above)
+
+```yaml
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fastapi-websocket-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fastapi-websocket-deployment  # Replace with your deployment name
+  minReplicas: 1
+  maxReplicas: 10  # Set your maximum number of replicas
+  metrics:
+  - type: External
+    external:
+      metric:
+        name: active_connections # Name of custom metric used in configMap
+        selector:
+          matchLabels:
+            app: fastapi-websocket # Ensure labels match your pods
+      target:
+        type: AverageValue
+        averageValue: 5 # Target number of websocket connections per pod
+```
+
+**Steps to Deploy:**
+
+1.  **Build and Push the Docker Image:**
+
+    ```bash
+    docker build -t your-docker-image .
+    docker tag your-docker-image:latest your-docker-registry/your-docker-image:latest
+    docker push your-docker-registry/your-docker-image:latest
+    ```
+
+    Replace `your-docker-image` and `your-docker-registry` with your actual Docker image name and registry.
+
+2.  **Deploy to Kubernetes:**
+
+    ```bash
+    kubectl apply -f deployment.yaml
+    kubectl apply -f service.yaml
+    kubectl apply -f hpa.yaml
+    ```
+
+    Remember to also deploy the Prometheus Adapter and configure it correctly to expose the `active_connections` metric. This includes creating the `custom-metrics` namespace if it doesn't exist and applying the `metric-server-resources.yaml` file.
+
+**Testing:**
+
+1.  **Create Load:**  Use a tool like `wscat` or a custom script to simulate a large number of WebSocket connections to your application.
+
+2.  **Monitor HPA:**  Observe the HPA's behavior using `kubectl get hpa fastapi-websocket-hpa`.  You should see the number of replicas increasing as the number of active WebSocket connections grows.
+
+## Alternative: Gunicorn and Web Workers
+
+While Uvicorn is excellent for development and small deployments, Gunicorn can provide better performance and stability for production environments, especially under heavy load.  You can combine Gunicorn with Uvicorn workers to manage multiple processes.
+
+**Example `gunicorn.conf.py`:**
+
+```python
+import multiprocessing
+
+bind = "0.0.0.0:8000"
+workers = multiprocessing.cpu_count() * 2 + 1  # Good starting point
+worker_class = "uvicorn.workers.UvicornWorker"
+```
+
+To start your application with Gunicorn:
+
+```bash
+gunicorn main:app -c gunicorn.conf.py
+```
+
+When using Gunicorn, you need to consider how to share the `active_connections` data across multiple worker processes.  Using a shared memory mechanism (e.g., Redis or a message queue) is recommended.  Each worker process updates the shared state, and the `/metrics` endpoint aggregates the data from the shared state.
+
+## Considerations for Production
+
+*   **Load Balancing:**  Use a load balancer to distribute traffic evenly across the available Pods.
+*   **Resource Limits:**  Set appropriate resource limits (CPU and memory) for your containers to prevent resource exhaustion.
+*   **Monitoring and Alerting:**  Implement comprehensive monitoring and alerting to detect performance issues and potential problems.
+*   **Security:**  Secure your WebSocket connections using TLS/SSL (WSS).
+*   **Connection Pooling:** Use connection pooling to reduce the overhead of establishing new connections.
+*   **Error Handling:** Implement robust error handling to gracefully handle unexpected errors and prevent connection drops.
+
+## Conclusion
+
+Auto-scaling FastAPI based on WebSocket connections is crucial for ensuring the performance and reliability of real-time applications. By using Kubernetes HPA with custom metrics, you can dynamically adjust the number of server instances based on the actual load, providing a scalable and responsive user experience. Remember to consider factors like concurrency, memory management, and robust monitoring when implementing this solution in a production environment. This approach, while complex, provides the most flexible and robust solution for handling dynamic WebSocket workloads in a Kubernetes environment. Remember to thoroughly test and adjust the HPA parameters to fine-tune the scaling behavior for your specific application.

@@ -1,0 +1,270 @@
+---
+title: "Real-Time Data with FastAPI and GraphQL Subscriptions: A Comprehensive Guide"
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['fastapi', 'graphql', 'subscriptions', 'real-time data', 'python', 'ariadne', 'websockets']
+draft: false
+summary: "Learn how to implement real-time data updates in your FastAPI application using GraphQL subscriptions powered by Ariadne and WebSockets. This comprehensive guide includes code examples and best practices."
+authors: ['default']
+---
+
+# Real-Time Data with FastAPI and GraphQL Subscriptions: A Comprehensive Guide
+
+In today's data-driven world, real-time updates are crucial for creating engaging and responsive user experiences.  This blog post explores how to combine the power of FastAPI, a modern, fast (high-performance), web framework for building APIs with Python 3.7+, with GraphQL subscriptions to deliver real-time data to your clients. We'll be using Ariadne, a schema-first Python library for implementing GraphQL servers, to handle our GraphQL needs, and WebSockets for the persistent connection required for subscriptions.
+
+## Why FastAPI and GraphQL Subscriptions?
+
+*   **FastAPI:** Known for its speed, automatic data validation, and easy-to-use API, FastAPI makes building robust backend APIs a breeze.
+*   **GraphQL Subscriptions:**  GraphQL subscriptions enable a client to receive real-time updates from the server whenever a specific event occurs. This is ideal for applications like:
+    *   Real-time dashboards
+    *   Live chat applications
+    *   Stock tickers
+    *   Collaborative editing tools
+
+## Prerequisites
+
+Before we dive into the code, ensure you have the following installed:
+
+*   **Python 3.7+:** FastAPI requires Python 3.7 or higher.
+*   **pip:** Python's package installer.
+
+## Setting up the Project
+
+First, create a new project directory and navigate into it:
+
+```bash
+mkdir fastapi-graphql-subscriptions
+cd fastapi-graphql-subscriptions
+```
+
+Next, create a virtual environment to manage dependencies:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Linux/macOS
+# venv\Scripts\activate  # On Windows
+```
+
+Now, install the necessary packages:
+
+```bash
+pip install fastapi uvicorn ariadne graphql-ws starlette-context
+```
+
+Let's break down these packages:
+
+*   **fastapi:** The core FastAPI framework.
+*   **uvicorn:** An ASGI (Asynchronous Server Gateway Interface) server for running FastAPI applications.
+*   **ariadne:**  A Python library for building GraphQL servers.
+*   **graphql-ws:** A library that handles the GraphQL over WebSocket protocol.
+*   **starlette-context:** Middleware to pass request context into GraphQL resolvers.
+
+## Defining the GraphQL Schema
+
+Create a file named `schema.graphql` and define your GraphQL schema.  For this example, we'll create a simple subscription that pushes a random number every second.
+
+```graphql
+type Query {
+  hello: String
+}
+
+type Subscription {
+  randomNumber: Int!
+}
+```
+
+## Implementing the GraphQL Server with Ariadne
+
+Create a file named `main.py` and add the following code:
+
+```python
+import asyncio
+import random
+from typing import AsyncGenerator
+
+from ariadne import QueryType, SubscriptionType, make_executable_schema, graphql_sync, upload_scalar, MutationType
+from ariadne.asgi import GraphQL
+from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse
+from starlette.websockets import WebSocket
+from starlette_context import context, middleware
+from starlette_context.middleware import RawContextMiddleware
+
+# Define type definitions (schema)
+with open("schema.graphql", "r") as f:
+    type_defs = f.read()
+
+# Query type
+query = QueryType()
+
+@query.field("hello")
+def resolve_hello(_, info):
+    request: Request = info.context["request"]
+    user_agent = request.headers.get("user-agent", "guest")
+    return f"Hello, {user_agent}!"
+
+# Subscription type
+subscription = SubscriptionType()
+
+@subscription.source("randomNumber")
+async def random_number_source() -> AsyncGenerator[int, None]:
+    while True:
+        await asyncio.sleep(1)
+        yield random.randint(1, 100)
+
+@subscription.field("randomNumber")
+def random_number_resolver(number: int, info):
+    return number
+
+# Make executable schema
+schema = make_executable_schema(type_defs, query, subscription)
+
+# FastAPI app
+app = FastAPI()
+
+# Add context middleware
+app.add_middleware(RawContextMiddleware)
+
+# GraphQL endpoint
+graphql_app = GraphQL(schema, debug=True)
+app.add_route("/graphql", graphql_app)
+
+@app.get("/")
+async def index():
+    return HTMLResponse("""
+    <h1>GraphQL Subscriptions Example</h1>
+    <p>Visit <a href="/graphql">/graphql</a> to interact with the GraphQL API.</p>
+    """)
+
+
+@app.websocket_route("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"Message text was: {data}")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
+        await websocket.close()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+Let's break down the code:
+
+*   **Import necessary modules:** We import modules from FastAPI, Ariadne, and other libraries.
+*   **Load the schema:** The `schema.graphql` file is read and its content is stored in `type_defs`.
+*   **Define resolvers:**
+    *   `resolve_hello` resolves the `hello` query.  It accesses the request context to get the user-agent.
+    *   `random_number_source` is a generator function that emits a random number every second. This function is responsible for generating the data that will be pushed to the client. Note the use of `AsyncGenerator` for asynchronous generation.
+    *   `random_number_resolver` resolves the `randomNumber` subscription field.  It simply returns the number generated by the source.
+*   **Create the schema:**  `make_executable_schema` combines the type definitions and resolvers to create a GraphQL schema.
+*   **Create the FastAPI app:** An instance of `FastAPI` is created.
+*   **Add Context Middleware:** `RawContextMiddleware` allows us to pass request context to GraphQL resolvers
+*   **Add the GraphQL endpoint:**  An instance of `GraphQL` from `ariadne.asgi` is created with the schema, and is mounted as a route with `/graphql`. Debugging is enabled.
+*   **Define index route:**  A basic HTML response is returned on the root route.
+*   **Define a basic WebSocket route:** Implemented for demonstration purposes.  This does not use the GraphQL subscription logic.
+*   **Run the app:** The `uvicorn` server is used to run the FastAPI application on `0.0.0.0:8000`.
+
+## Testing the GraphQL Subscriptions
+
+1.  **Run the FastAPI application:**
+
+    ```bash
+    python main.py
+    ```
+
+2.  **Access the GraphQL endpoint:** Open your browser and go to `http://localhost:8000/graphql`.  You can use a GraphQL client like GraphiQL or Apollo Client to interact with the API.
+
+3.  **Execute the subscription:** In your GraphQL client, enter the following subscription query:
+
+    ```graphql
+    subscription {
+      randomNumber
+    }
+    ```
+
+    You should start receiving real-time updates with random numbers every second.
+
+## Using a GraphQL Client with Subscriptions (Example using Altair)
+
+Altair is a popular GraphQL client that supports subscriptions.  Here's how you can configure it:
+
+1.  **Install Altair:** Download and install the Altair GraphQL Client from [https://altair.sirvion.net/](https://altair.sirvion.net/).
+
+2.  **Configure the endpoint:** In Altair, set the GraphQL endpoint to `ws://localhost:8000/graphql`.  **Important:** Note the `ws://` protocol for WebSockets, and ensure that you're using `wss://` for secure connections in production environments.
+
+3.  **Execute the subscription query:** Enter the following subscription query in Altair:
+
+    ```graphql
+    subscription {
+      randomNumber
+    }
+    ```
+
+    Click the "Play" button to start the subscription. You should now see real-time updates.
+
+## Handling Errors and Disconnections
+
+In a real-world application, you'll need to handle errors and disconnections gracefully. Ariadne provides mechanisms for handling errors within resolvers.  You'll also need to consider how to manage WebSocket disconnections and reconnections.
+
+*   **Error Handling in Resolvers:**  Use `try...except` blocks within your resolvers to catch potential errors and return appropriate error messages to the client.
+*   **WebSocket Disconnections:**  Implement logic to handle WebSocket disconnections.  You can use the `on_disconnect` event in your WebSocket handler to perform cleanup tasks.
+*   **Client-Side Reconnections:**  On the client side, use a library or implement custom logic to automatically reconnect to the WebSocket if the connection is lost. Libraries like `graphql-ws` for JavaScript provide built-in reconnection mechanisms.
+
+## Going Further: Implementing Mutations and Queries
+
+This example focused on subscriptions, but you can easily extend it to include mutations and queries. Simply define the appropriate types and resolvers in your `schema.graphql` and `main.py` files.
+
+```graphql
+type Query {
+  getMessage(id: ID!): String
+}
+
+type Mutation {
+  createMessage(text: String!): String
+}
+```
+
+And in `main.py`:
+
+```python
+# ... existing code ...
+
+mutation = MutationType()
+
+@mutation.field("createMessage")
+def resolve_create_message(_, info, text: str):
+    # Add your logic to create a new message here
+    new_message = f"Created message: {text}"
+    return new_message
+
+@query.field("getMessage")
+def resolve_get_message(_, info, id: str):
+  # Add your logic to retrieve a message
+  return f"Message with ID {id}"
+
+
+schema = make_executable_schema(type_defs, query, subscription, mutation)
+
+# ... rest of the code ...
+
+```
+
+## Security Considerations
+
+*   **Authentication:**  Implement authentication to ensure that only authorized users can access your GraphQL API.  You can use FastAPI's security features and integrate with authentication providers like OAuth 2.0.
+*   **Authorization:**  Implement authorization to control which users can access specific data or perform specific actions.  You can use GraphQL directives or custom logic within your resolvers to enforce authorization rules.
+*   **Rate Limiting:**  Implement rate limiting to prevent abuse of your API.  FastAPI provides middleware for rate limiting.
+*   **Input Validation:**  Ensure that all user input is properly validated to prevent injection attacks.  FastAPI's automatic data validation helps with this.
+*   **WebSocket Security:** For production, ensure you are using `wss://` which uses TLS for secure connection via websockets.
+
+## Conclusion
+
+This guide provides a foundation for building real-time applications with FastAPI and GraphQL subscriptions. By combining the speed and ease of use of FastAPI with the flexibility and real-time capabilities of GraphQL subscriptions, you can create powerful and engaging user experiences.  Remember to consider error handling, security, and scalability as you develop your applications.  Experiment with different data sources and subscription patterns to explore the full potential of this technology stack.

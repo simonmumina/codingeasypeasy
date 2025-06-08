@@ -1,0 +1,241 @@
+---
+title: 'Implement Circuit Breakers for API Calls in FastAPI with aiobreaker'
+date: '2024-10-26'
+lastmod: '2024-10-26'
+tags: ['fastapi', 'circuit breaker', 'api', 'aiobreaker', 'python', 'resilience', 'microservices', 'error handling']
+draft: false
+summary: 'Learn how to implement circuit breaker patterns in your FastAPI applications using aiobreaker to improve resilience and prevent cascading failures when interacting with external APIs.'
+authors: ['default']
+---
+
+# Implementing Circuit Breakers for External API Calls in FastAPI with aiobreaker
+
+In modern microservice architectures, applications frequently interact with multiple external APIs.  These interactions are prone to failures due to network issues, server downtime, or unexpected errors. Without proper handling, these failures can cascade, impacting the overall performance and stability of your application. A circuit breaker is a crucial pattern for building resilient systems, preventing repeated calls to failing services and allowing them time to recover. This blog post will guide you through implementing the circuit breaker pattern in your FastAPI applications using the `aiobreaker` library, a popular and efficient asynchronous circuit breaker for Python.
+
+## What is a Circuit Breaker?
+
+Imagine an electrical circuit breaker in your home. When an overload occurs, the breaker trips, preventing further damage.  A software circuit breaker works similarly. It monitors the success and failure rate of calls to an external service. If the failure rate exceeds a predefined threshold, the circuit breaker "trips," preventing subsequent calls to the failing service for a set period.  This allows the failing service time to recover without being overwhelmed by further requests.  After the timeout, the circuit breaker enters a "half-open" state, allowing a limited number of test calls to the service. If these calls are successful, the circuit breaker "closes," resuming normal operation. If they fail, it returns to the "open" state.
+
+The key benefits of using a circuit breaker are:
+
+*   **Improved Resilience:** Prevents cascading failures by stopping calls to failing services.
+*   **Faster Recovery:** Allows failing services time to recover without being overwhelmed.
+*   **Reduced Latency:** Avoids unnecessary delays caused by repeatedly attempting to connect to an unavailable service.
+*   **Improved User Experience:** Provides a more stable and reliable user experience by preventing application downtime.
+
+## Why aiobreaker?
+
+`aiobreaker` is an asynchronous implementation of the circuit breaker pattern for Python, built using `asyncio`. It's designed to work seamlessly with asynchronous frameworks like FastAPI, providing efficient and non-blocking operation.  It offers features like:
+
+*   **Asynchronous Operation:**  Leverages `asyncio` for non-blocking behavior, crucial for high-performance applications.
+*   **Customizable Thresholds:** Allows you to configure the failure rate threshold, recovery timeout, and other parameters to suit your specific needs.
+*   **State Management:** Provides clear visibility into the circuit breaker's current state (open, closed, half-open).
+*   **Event Hooks:** Enables you to trigger custom actions based on circuit breaker state changes (e.g., logging, alerting).
+
+## Setting up the Project and Installing Dependencies
+
+First, let's create a new project directory and initialize a virtual environment:
+
+```bash
+mkdir fastapi-circuit-breaker
+cd fastapi-circuit-breaker
+python3 -m venv .venv
+source .venv/bin/activate  # Or .venv\Scripts\activate on Windows
+```
+
+Now, install FastAPI, `aiobreaker`, and `httpx` (for making HTTP requests):
+
+```bash
+pip install fastapi uvicorn aiobreaker httpx
+```
+
+## Implementing the Circuit Breaker with FastAPI
+
+Here's a step-by-step guide to implementing a circuit breaker for external API calls in your FastAPI application.
+
+**1.  Create a `CircuitBreaker` Instance:**
+
+First, we'll create an `aiobreaker.CircuitBreaker` instance.  We can customize its behavior by passing arguments to the constructor.
+
+```python
+import asyncio
+import httpx
+from fastapi import FastAPI, HTTPException
+from aiobreaker import CircuitBreaker
+
+app = FastAPI()
+
+# Configure the circuit breaker
+breaker = CircuitBreaker(
+    fail_max=3,          # Number of consecutive failures before opening the circuit
+    reset_timeout=10,   # Time in seconds before the circuit transitions to half-open
+    excluded_exceptions=(HTTPException,), # Exceptions to ignore and not count towards failure
+)
+
+EXTERNAL_API_URL = "https://rickandmortyapi.com/api/character" # Example API
+```
+
+In this example:
+
+*   `fail_max=3`: The circuit breaker will open after three consecutive failures.
+*   `reset_timeout=10`:  The circuit breaker will transition to the half-open state after 10 seconds in the open state.
+*   `excluded_exceptions=(HTTPException,)`:  FastAPI's `HTTPException` will *not* trigger the circuit breaker. This is useful if you have your own error handling within the function.
+
+**2.  Define a Function to Call the External API:**
+
+Now, let's define an asynchronous function that makes a request to the external API using `httpx`. We'll wrap this function with the `@breaker` decorator.
+
+```python
+@breaker
+async def fetch_data_from_api(url: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        # Handle HTTP errors specifically
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except Exception as e:
+        # Handle other exceptions (e.g., network errors, timeouts)
+        print(f"An unexpected error occurred: {e}")
+        raise
+```
+
+Key points:
+
+*   We use `httpx.AsyncClient()` to make asynchronous HTTP requests.
+*   `response.raise_for_status()` checks for HTTP errors (4xx and 5xx status codes) and raises an `HTTPError` if one occurs.
+*   We catch `httpx.HTTPStatusError` to specifically handle HTTP errors and re-raise them as FastAPI `HTTPException` to be handled by FastAPI's error handling mechanism.  This ensures proper HTTP status codes are returned to the client.
+*   We catch generic `Exception` for all other errors (network issues, timeouts, etc.). These exceptions *will* trigger the circuit breaker.
+*   The `@breaker` decorator automatically handles the circuit breaker logic, intercepting calls to this function when the circuit is open and raising an `aiobreaker.CircuitBreakerError`.
+
+**3. Create a FastAPI Endpoint to Use the Function:**
+
+Finally, let's create a FastAPI endpoint that calls the `fetch_data_from_api` function and handles the potential `CircuitBreakerError`.
+
+```python
+@app.get("/data")
+async def get_data():
+    try:
+        data = await fetch_data_from_api(EXTERNAL_API_URL)
+        return data
+    except CircuitBreakerError:
+        return {"message": "Service unavailable. Please try again later."}
+    except Exception as e:
+        # Log the error
+        print(f"An unexpected error occurred: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+```
+
+Explanation:
+
+*   The `get_data` endpoint calls the `fetch_data_from_api` function.
+*   We catch the `CircuitBreakerError` raised by `aiobreaker` when the circuit is open and return a user-friendly error message.
+*   We also catch any other `Exception` (which shouldn't happen often, as most errors are now HTTPExceptions and will NOT trigger the circuit), log it, and raise a generic `HTTPException` with a 500 status code.
+
+**4. Complete Example Code:**
+
+Here's the complete code for the FastAPI application:
+
+```python
+import asyncio
+import httpx
+from fastapi import FastAPI, HTTPException
+from aiobreaker import CircuitBreaker, CircuitBreakerError
+
+app = FastAPI()
+
+# Configure the circuit breaker
+breaker = CircuitBreaker(
+    fail_max=3,          # Number of consecutive failures before opening the circuit
+    reset_timeout=10,   # Time in seconds before the circuit transitions to half-open
+    excluded_exceptions=(HTTPException,), # Exceptions to ignore and not count towards failure
+)
+
+EXTERNAL_API_URL = "https://rickandmortyapi.com/api/character" # Example API
+
+@breaker
+async def fetch_data_from_api(url: str):
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url)
+            response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        # Handle HTTP errors specifically
+        raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except Exception as e:
+        # Handle other exceptions (e.g., network errors, timeouts)
+        print(f"An unexpected error occurred: {e}")
+        raise
+
+@app.get("/data")
+async def get_data():
+    try:
+        data = await fetch_data_from_api(EXTERNAL_API_URL)
+        return data
+    except CircuitBreakerError:
+        return {"message": "Service unavailable. Please try again later."}
+    except Exception as e:
+        # Log the error
+        print(f"An unexpected error occurred: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+```
+
+**5. Running the Application and Testing the Circuit Breaker:**
+
+1.  Save the code as `main.py`.
+2.  Run the application using Uvicorn:
+
+    ```bash
+    uvicorn main:app --reload
+    ```
+
+3.  Access the endpoint in your browser or using `curl`: `http://localhost:8000/data`
+
+To test the circuit breaker, you can simulate a failing API by either:
+
+*   Temporarily taking the external API offline (if you control it).
+*   Modifying the `EXTERNAL_API_URL` to an invalid address.
+*   Adding a `time.sleep()` within the `fetch_data_from_api` function to simulate a timeout.
+
+After the `fail_max` number of consecutive failures (3 in this example), the circuit breaker will open, and subsequent requests to `/data` will return the "Service unavailable" message until the `reset_timeout` (10 seconds) has elapsed.  After that timeout, `aiobreaker` will attempt one request.  If it's successful the circuit closes, otherwise, it goes back to the open state.
+
+## Advanced Configuration and Customization
+
+`aiobreaker` offers several options for customizing its behavior:
+
+*   **`threshold`:** The fraction of requests that must fail to trip the circuit (defaults to `fail_max`). This is often used with `total_requests` to control the circuit breaker.  E.g., `threshold=0.5, total_requests=10` means that at least 5 out of the last 10 requests must fail for the circuit to open.
+*   **`state_storage`:**  Allows you to persist the circuit breaker's state across application restarts. You can implement a custom `StateStorage` class to store the state in a database or other persistent storage.
+*   **Event Handlers:**  You can register callback functions to be executed when the circuit breaker's state changes. This can be useful for logging, alerting, or triggering other actions.  For example:
+
+```python
+from aiobreaker import CircuitBreaker, CircuitBreakerError
+
+def on_circuit_open():
+    print("Circuit breaker opened!")
+
+def on_circuit_close():
+    print("Circuit breaker closed!")
+
+breaker = CircuitBreaker(fail_max=3, reset_timeout=10)
+breaker.add_listener(on_circuit_open, state=CircuitBreaker.STATE_OPEN)
+breaker.add_listener(on_circuit_close, state=CircuitBreaker.STATE_CLOSED)
+
+# ... (rest of your code)
+```
+
+*   **Custom Exceptions:** You can exclude specific exceptions from triggering the circuit breaker by passing them to the `excluded_exceptions` argument.  As shown in the example code, this is crucial to ensure that your internal error handling doesn't inadvertently trip the circuit.
+
+## Best Practices
+
+*   **Choose Appropriate Thresholds:** Carefully consider the `fail_max`, `reset_timeout`, `threshold` and `total_requests` values based on the characteristics of the external service and your application's requirements. Don't set `fail_max` too low, or the circuit breaker might trip unnecessarily.
+*   **Implement Proper Error Handling:**  Handle different types of errors appropriately.  Distinguish between transient errors (e.g., temporary network glitches) and permanent errors (e.g., invalid API keys).  Only count transient errors towards triggering the circuit breaker.
+*   **Provide Fallback Mechanisms:** When the circuit breaker is open, provide a fallback mechanism to gracefully handle the failure. This could involve returning cached data, displaying an error message, or redirecting the user to a different service.
+*   **Monitor Circuit Breaker State:** Monitor the state of your circuit breakers and track the number of times they open and close. This can provide valuable insights into the health and performance of your external services.
+*   **Avoid Over-reliance:** While useful, circuit breakers aren't a silver bullet.  Focus on improving the reliability of the external services themselves through proper monitoring, redundancy, and scalability.
+
+## Conclusion
+
+Implementing circuit breakers with `aiobreaker` in your FastAPI applications is an effective way to improve resilience and prevent cascading failures when interacting with external APIs. By carefully configuring the circuit breaker and implementing proper error handling and fallback mechanisms, you can build more robust and reliable applications. Remember to monitor your circuit breakers and adapt your configuration as needed to optimize their performance.  This helps ensure a better user experience, even when faced with unreliable external services.

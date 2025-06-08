@@ -1,0 +1,411 @@
+---
+title: 'Testing WebSocket Reconnection Logic in FastAPI: A Comprehensive Guide'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['fastapi', 'websockets', 'testing', 'python', 'reconnection', 'pytest', 'asgi', 'asyncio']
+draft: false
+summary: 'Learn how to effectively test WebSocket reconnection logic in FastAPI applications. This comprehensive guide provides practical examples and strategies for ensuring your WebSocket connections are robust and resilient.'
+authors: ['default']
+---
+
+# Testing WebSocket Reconnection Logic in FastAPI: A Comprehensive Guide
+
+WebSockets provide real-time, bidirectional communication between a client and a server. In a world increasingly reliant on instant updates and interactive applications, ensuring the reliability of WebSocket connections is paramount. This post will guide you through testing WebSocket reconnection logic in FastAPI, a modern, high-performance Python web framework.  We'll cover various strategies, from simulating connection drops to verifying reconnection attempts, along with practical code examples.
+
+## Why Test WebSocket Reconnection Logic?
+
+Network conditions are unpredictable. WebSocket connections can be disrupted due to various factors, including:
+
+*   **Network instability:** Wi-Fi fluctuations, mobile network switching, or temporary internet outages.
+*   **Server restarts:** Planned maintenance or unexpected server crashes.
+*   **Client-side errors:** Browser or application bugs that might close the connection.
+
+Without robust reconnection logic, these disruptions can lead to a poor user experience, data loss, or application malfunction.  Testing ensures your application gracefully handles these situations, maintains connection integrity, and minimizes disruption.
+
+## Prerequisites
+
+*   **Python 3.7+:**  FastAPI requires Python 3.7 or higher.
+*   **FastAPI:**  `pip install fastapi`
+*   **Uvicorn:**  An ASGI server to run FastAPI. `pip install uvicorn`
+*   **pytest:**  A popular Python testing framework. `pip install pytest`
+*   **websockets:** The core WebSocket library for Python. `pip install websockets`
+*   **pytest-asyncio:** A pytest plugin for asynchronous tests. `pip install pytest-asyncio`
+*   **httpx:** An HTTP client that supports both HTTP/1.1 and HTTP/2, useful for testing the initial HTTP connection before the WebSocket upgrade. `pip install httpx`
+
+## Example FastAPI WebSocket Application
+
+Let's start with a simple FastAPI application that implements a WebSocket endpoint with basic reconnection logic.
+
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import asyncio
+
+app = FastAPI()
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_personal_message(self, message: str, websocket: WebSocket):
+        await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: int):
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await manager.send_personal_message(f"You wrote: {data}", websocket)
+            await manager.broadcast(f"Client #{client_id} says: {data}")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        await manager.broadcast(f"Client #{client_id} left the chat")
+
+```
+
+This code defines a simple WebSocket endpoint that echoes messages back to the client and broadcasts them to all connected clients. It also handles disconnections gracefully. Note, however, that it doesn't explicitly handle *reconnection*. The client will need to initiate the reconnection process.
+
+## Testing Reconnection Scenarios
+
+Here's where things get interesting.  We need to simulate connection failures and verify that our client-side reconnection logic works as expected.  We'll use `pytest` and `pytest-asyncio` to write asynchronous tests.
+
+### 1. Setting up a Test Client
+
+First, let's create a reusable test client that handles the WebSocket connection and reconnection attempts.  This example assumes the client automatically tries to reconnect if the connection is closed.  The reconnection logic would typically be implemented in JavaScript in a real-world web application.
+
+```python
+import pytest
+import asyncio
+from websockets import connect
+import websockets
+import json
+
+
+class WebSocketTestClient:
+    def __init__(self, url: str, client_id: int, max_retries: int = 3, retry_delay: float = 1):
+        self.url = url
+        self.client_id = client_id
+        self.websocket = None
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.received_messages = []
+        self.is_connected = False
+
+    async def connect(self):
+        retries = 0
+        while retries < self.max_retries:
+            try:
+                uri = f"{self.url}{self.client_id}"
+                self.websocket = await connect(uri)
+                self.is_connected = True
+                print(f"Client {self.client_id}: Connected successfully.")
+                return True
+            except Exception as e:
+                print(f"Client {self.client_id}: Connection failed (attempt {retries + 1}/{self.max_retries}): {e}")
+                retries += 1
+                await asyncio.sleep(self.retry_delay)
+
+        print(f"Client {self.client_id}: Failed to connect after {self.max_retries} retries.")
+        self.is_connected = False
+        return False
+
+    async def send(self, message: str):
+        if self.websocket and not self.websocket.closed:
+            await self.websocket.send(message)
+        else:
+            print(f"Client {self.client_id}: Cannot send message. Not connected.")
+
+    async def receive(self):
+        try:
+            if self.websocket:
+                message = await self.websocket.recv()
+                self.received_messages.append(message)
+                return message
+            else:
+                return None
+        except websockets.exceptions.ConnectionClosedError:
+            print(f"Client {self.client_id}: Connection closed.")
+            self.is_connected = False
+            return None
+        except Exception as e:
+            print(f"Client {self.client_id}: Receive error: {e}")
+            return None
+
+    async def close(self):
+        if self.websocket:
+            await self.websocket.close()
+            self.is_connected = False
+        print(f"Client {self.client_id}: Connection closed.")
+        await asyncio.sleep(0.1)  #Give it a little time to close
+
+    def get_received_messages(self):
+        return self.received_messages
+
+    def is_connection_open(self):
+       return self.websocket is not None and not self.websocket.closed
+
+```
+
+This `WebSocketTestClient` class encapsulates the logic for connecting to a WebSocket endpoint, sending and receiving messages, and handling disconnections with automatic retries. The crucial part is the `connect()` method which retries connecting based on configured `max_retries` and `retry_delay`. It also tracks connection status.
+
+### 2.  Base Fixture for Testing
+
+To streamline our tests, we can create a pytest fixture that starts and stops the FastAPI application.  This also gives us the base URL for our WebSocket endpoint.
+
+```python
+import pytest
+import uvicorn
+import asyncio
+from multiprocessing import Process
+from httpx import AsyncClient  # Import AsyncClient
+
+BASE_URL = "ws://localhost:8000/ws/"
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    loop = asyncio.get_event_loop()
+    yield loop
+    loop.close()
+
+
+def run_app():
+    uvicorn.run("main:app", host="localhost", port=8000, log_level="info")
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def app_process():
+    proc = Process(target=run_app, daemon=True)
+    proc.start()
+    await asyncio.sleep(1)  # Give the app time to start
+    yield
+    proc.terminate()
+    proc.join()
+
+@pytest.fixture(scope="session")
+async def client():
+    async with AsyncClient(app=app, base_url="http://localhost:8000") as client:
+        yield client
+```
+
+Key points:
+
+*   `event_loop`:  A session-scoped fixture to manage the asyncio event loop.
+*   `app_process`:  A session-scoped fixture that starts the FastAPI application in a separate process using `uvicorn`.  This prevents blocking the test execution. The `daemon=True` ensures the process is killed when the test session ends. We also add a short `asyncio.sleep()` to give the app time to start before running tests. The fixture also terminates the process when the test session is completed.
+*   `client`: An `httpx` client for initial HTTP requests (if needed). While this example focuses on websockets, it's often useful to have an HTTP client for setting up initial conditions or verifying API behavior.
+* `BASE_URL` : Defines the base URL for WebSocket connections in your tests.
+
+**Important:** Ensure your main app file is named `main.py` (or adjust the `uvicorn.run` command accordingly) and that it contains the `app` instance from our example.
+
+### 3. Testing a Simulated Server Restart
+
+Now, let's create a test that simulates a server restart during a WebSocket connection.  We'll connect a client, send a message, then abruptly kill the server process, simulating a crash.  The client *should* automatically reconnect and attempt to send another message.
+
+```python
+import pytest
+import asyncio
+from websockets import connect
+import websockets
+from multiprocessing import Process
+import uvicorn
+from .main import app  # Import your FastAPI app
+from .websocket_client import WebSocketTestClient
+
+@pytest.mark.asyncio
+async def test_websocket_reconnection(app_process):  #Use the app_process fixture
+    client_id = 1
+    client = WebSocketTestClient(url="ws://localhost:8000/ws/", client_id=client_id)
+
+    is_connected = await client.connect()
+    assert is_connected, "Client failed to connect initially"
+    assert client.is_connection_open(), "Client should be connected"
+
+
+    await client.send("First message")
+    response1 = await client.receive()
+    assert response1 is not None, "First message should be received"
+
+    # Simulate server restart
+    print("Simulating Server Restart")
+    for proc in app_process.process.children():
+        proc.terminate()
+        proc.join()
+
+    app_process.terminate()
+    app_process.join()
+
+
+    # Start the app again
+    new_app_process = Process(target=run_app, daemon=True)
+    new_app_process.start()
+    await asyncio.sleep(2) #Give it time to restart
+
+    # Attempt to send another message after reconnection
+    await client.send("Second message after restart")
+    response2 = await client.receive()
+    assert response2 is not None, "Second message should be received after restart"
+    assert client.is_connection_open(), "Client should be reconnected"
+
+
+    await client.close()
+```
+
+Explanation:
+
+1.  **`@pytest.mark.asyncio`:**  Marks the test as an asynchronous test for `pytest-asyncio`.
+2.  **`client = WebSocketTestClient(...)`:** Creates an instance of our `WebSocketTestClient` with the correct WebSocket URL and client ID.
+3.  **`await client.connect()`:** Connects the client to the WebSocket endpoint. The assertion verifies the connection was established successfully.
+4.  **`await client.send(...)` & `await client.receive()`:**  Sends a message and verifies the response.  This ensures the initial connection is working.
+5.  **Simulating Server Restart:**  This is the core of the test. We terminate the Uvicorn process (simulating a server crash).  We *then* need to restart the process for the client to be able to reconnect.  `app_process` is terminated and `run_app` is used to start it up again. We introduce `asyncio.sleep(2)` to ensure that the server is running again before we attempt reconnection and message sending.
+6.  **Sending After Restart:**  After simulating the restart, we attempt to send another message.  The client's reconnection logic *should* kick in, re-establish the connection, and successfully send the message. The assertions verify that the reconnection was successful and that the second message was delivered.
+7.  **`await client.close()`:**  Closes the WebSocket connection gracefully at the end of the test.
+
+**Important Considerations:**
+
+*   **Graceful Termination:** The above example abruptly terminates the Uvicorn process. In a real-world scenario, you might want to simulate a more graceful shutdown, allowing the server to complete any pending operations. However, the abrupt termination better simulates an actual crash.
+*   **Client-Side Reconnection Logic:** This test relies on the client-side code implementing the reconnection logic.  The `WebSocketTestClient` demonstrates a basic retry mechanism. You'll need to adapt the client to match your actual implementation.
+
+### 4. Testing Network Disconnections
+
+Another scenario is simulating a network disconnection without killing the server.  This requires a bit more setup but can be achieved using tools like `iptables` (on Linux) to block traffic to the server's port.  Since this is more platform-specific, I'll provide a conceptual outline:
+
+1.  **Setup `iptables`:**  Before the test, use `iptables` to block traffic to the server's port (8000 in this case). This effectively simulates a network outage for the client.
+2.  **Run the Test:** Connect the client, send a message, and then block the traffic with `iptables`.
+3.  **Verify Reconnection:**  After blocking the traffic, attempt to send another message. The client should detect the disconnection and attempt to reconnect.
+4.  **Remove `iptables` Rule:**  After a suitable delay (to allow the client to attempt reconnection), remove the `iptables` rule to restore network connectivity.
+5.  **Verify Message Delivery:**  The client should eventually reconnect and deliver the message.
+
+**Example (Conceptual using `subprocess` to interact with `iptables`):**
+
+```python
+import subprocess
+import pytest
+import asyncio
+from .websocket_client import WebSocketTestClient
+
+@pytest.mark.asyncio
+async def test_network_disconnection(app_process):
+    client_id = 1
+    client = WebSocketTestClient(url="ws://localhost:8000/ws/", client_id=client_id)
+
+    is_connected = await client.connect()
+    assert is_connected, "Client failed to connect initially"
+
+    await client.send("Initial message")
+    response = await client.receive()
+    assert response is not None
+
+    # Block traffic to port 8000 (replace with your actual port)
+    subprocess.run(["sudo", "iptables", "-A", "INPUT", "-p", "tcp", "--dport", "8000", "-j", "DROP"], check=True)
+    print("Traffic blocked using iptables")
+
+    await asyncio.sleep(3)  # Give time for the connection to drop and client to try reconnect
+
+    # Remove the iptables rule
+    subprocess.run(["sudo", "iptables", "-D", "INPUT", "-p", "tcp", "--dport", "8000", "-j", "DROP"], check=True)
+    print("Traffic unblocked using iptables")
+
+    await asyncio.sleep(5) # Allow time for reconnection to happen
+
+    # Send a message after reconnection
+    await client.send("Message after reconnection")
+    response2 = await client.receive()  # This should eventually succeed after reconnection
+    assert response2 is not None, "Message should be received after reconnection"
+
+
+    await client.close()
+```
+
+**Important:**
+
+*   This example requires `sudo` privileges to modify `iptables`. You might need to configure your test environment accordingly.
+*   The exact `iptables` commands might vary depending on your operating system and firewall configuration.
+*   This is a *simplified* example. Error handling (e.g., checking if `iptables` is installed) and more robust cleanup are crucial in a production environment.
+
+### 5. Mocking the WebSocket Connection
+
+For simpler, more isolated tests, you can mock the WebSocket connection.  This allows you to control the connection state and simulate different scenarios without relying on a real server.  `unittest.mock` or a similar mocking library can be used for this.
+
+**Example (Conceptual):**
+
+```python
+import pytest
+from unittest.mock import AsyncMock, patch
+from .websocket_client import WebSocketTestClient
+
+
+@pytest.mark.asyncio
+async def test_mocked_websocket_reconnection():
+    client_id = 1
+    client = WebSocketTestClient(url="ws://localhost:8000/ws/", client_id=client_id)
+
+    mock_websocket = AsyncMock()
+    mock_websocket.recv.side_effect = [
+        "Initial message response",
+        Exception("Simulated disconnection"),  # Simulate a disconnection
+        "Reconnected message response",
+    ]
+
+    with patch("websockets.connect", return_value=mock_websocket):
+        is_connected = await client.connect()
+        assert is_connected
+
+        await client.send("Initial message")
+        response1 = await client.receive()
+        assert response1 == "Initial message response"
+
+        # The next receive() call should raise an exception, simulating a disconnection
+        await client.send("Attempt to send after disconnection") #This message will be "lost" in this example
+
+        #After reconnecting the receive should work again
+        await client.send("Message after reconnection")
+        response2 = await client.receive()
+        assert response2 == "Reconnected message response"
+
+        await client.close()
+```
+
+**Explanation:**
+
+1.  **`mock_websocket = AsyncMock()`:** Creates an asynchronous mock object for the WebSocket connection.
+2.  **`mock_websocket.recv.side_effect = [...]`:**  Defines the behavior of the `recv()` method.  The first call returns a normal response, the second raises an exception (simulating a disconnection), and the third returns another response after reconnection. This allows controlled simulation of failure scenarios.
+3.  **`with patch("websockets.connect", return_value=mock_websocket):`:**  Replaces the `websockets.connect` function with our mock object. This intercepts the connection attempt and returns the mock WebSocket instead of a real one.
+4.  The rest of the test then proceeds as before, sending and receiving messages. The mock WebSocket's predefined behavior simulates the disconnection and subsequent reconnection.
+
+**Advantages of Mocking:**
+
+*   **Isolation:**  Mocking allows you to isolate the client-side reconnection logic and test it independently of the server.
+*   **Speed:**  Mocked tests are generally much faster than integration tests that involve a real server.
+*   **Control:**  You have complete control over the connection state and can easily simulate various error scenarios.
+
+**Disadvantages of Mocking:**
+
+*   **Less Realistic:**  Mocked tests are less realistic than integration tests. They don't test the entire system, including the server-side code and the network communication.
+*   **Maintenance:**  Mocked tests can be more difficult to maintain if the actual WebSocket API changes.
+
+## Best Practices for Testing WebSocket Reconnection
+
+*   **Test Different Scenarios:**  Simulate various types of disconnections, including server crashes, network outages, and client-side errors.
+*   **Verify Reconnection Attempts:**  Ensure the client attempts to reconnect after a disconnection, and that the reconnection attempts are made with appropriate delays.
+*   **Validate Message Delivery:**  Verify that messages are delivered successfully after a reconnection.
+*   **Test with Multiple Clients:**  Test the reconnection logic with multiple concurrent clients to ensure that the server can handle multiple reconnections gracefully.
+*   **Consider Using a Real Server in Some Tests:**  While mocking is useful for isolated tests, include some integration tests with a real server to ensure the entire system works correctly.
+*   **Log and Monitor Reconnections:**  Implement logging and monitoring to track reconnection events in your production environment. This can help you identify and diagnose issues related to WebSocket connectivity.
+
+## Conclusion
+
+Testing WebSocket reconnection logic is crucial for building robust and reliable real-time applications. By using FastAPI, `pytest`, and the techniques described in this guide, you can ensure that your WebSocket connections are resilient to network disruptions and server outages. Remember to test various scenarios, verify reconnection attempts, and validate message delivery to build a solid foundation for your real-time applications.

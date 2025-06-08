@@ -1,0 +1,289 @@
+---
+title: 'FastAPI and OpenTelemetry: Implementing Distributed Tracing for Microservices'
+date: '2024-01-26'
+lastmod: '2024-01-26'
+tags: ['fastapi', 'opentelemetry', 'distributed tracing', 'microservices', 'observability', 'python', 'jaeger', 'prometheus']
+draft: false
+summary: 'Learn how to integrate FastAPI with OpenTelemetry for robust distributed tracing in microservices architectures. Track requests across services, identify bottlenecks, and improve application performance.'
+authors: ['default']
+---
+
+# FastAPI and OpenTelemetry: Implementing Distributed Tracing for Microservices
+
+As your FastAPI applications grow, especially when adopting a microservices architecture, understanding the flow of requests across different services becomes crucial. Identifying performance bottlenecks and debugging issues can be significantly challenging without proper observability. This is where **distributed tracing** comes in.
+
+This blog post will guide you through integrating **FastAPI** with **OpenTelemetry** to implement distributed tracing. We'll cover setting up OpenTelemetry, instrumenting your FastAPI application, configuring exporters to send tracing data, and visualizing the traces using Jaeger.  By the end of this guide, you'll have a robust system for monitoring and debugging your FastAPI-based microservices.
+
+## What is Distributed Tracing?
+
+Distributed tracing is a method of profiling and monitoring applications built on a microservices architecture. It allows you to track requests as they propagate through different services, providing insights into latency, error rates, and the overall flow of execution. This information is invaluable for identifying performance bottlenecks, understanding dependencies, and debugging issues that span multiple services.
+
+## Why OpenTelemetry?
+
+OpenTelemetry is a vendor-neutral, open-source observability framework for cloud-native software. It provides a set of APIs, SDKs, and tools for generating, collecting, and exporting telemetry data (traces, metrics, and logs).
+
+**Key benefits of using OpenTelemetry:**
+
+*   **Vendor Neutrality:** Avoid vendor lock-in and easily switch between different observability backends.
+*   **Standardization:** Provides a common standard for instrumenting applications, making it easier to integrate with various observability tools.
+*   **Wide Adoption:** Supported by a large community and a wide range of observability platforms.
+*   **Flexibility:** Supports various programming languages and frameworks.
+
+## Prerequisites
+
+Before you start, make sure you have the following installed:
+
+*   **Python 3.7+**
+*   **Docker (Optional, for Jaeger)**
+*   **pip**
+
+## Step 1: Setting up the FastAPI Project
+
+Let's start by creating a simple FastAPI application.
+
+```bash
+mkdir fastapi-opentelemetry
+cd fastapi-opentelemetry
+python3 -m venv venv
+source venv/bin/activate  # Or venv\Scripts\activate on Windows
+pip install fastapi uvicorn
+```
+
+Create a file named `main.py` and add the following code:
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+You can run this application using:
+
+```bash
+python main.py
+```
+
+Navigate to `http://localhost:8000` in your browser to see the "Hello World" message.
+
+## Step 2: Installing OpenTelemetry Dependencies
+
+Now, let's install the necessary OpenTelemetry packages:
+
+```bash
+pip install opentelemetry-api opentelemetry-sdk opentelemetry-exporter-jaeger opentelemetry-instrumentation-fastapi opentelemetry-instrumentation-requests
+```
+
+**Explanation of the packages:**
+
+*   `opentelemetry-api`:  Provides the OpenTelemetry API definitions.
+*   `opentelemetry-sdk`:  Implements the OpenTelemetry SDK, responsible for creating and managing spans.
+*   `opentelemetry-exporter-jaeger`: Exports tracing data to Jaeger. You can replace this with other exporters like Zipkin or OTLP.
+*   `opentelemetry-instrumentation-fastapi`:  Automatically instruments FastAPI applications for tracing.
+*   `opentelemetry-instrumentation-requests`: Instruments the `requests` library for tracing outgoing HTTP requests. This is useful for tracing calls to other services.
+
+## Step 3: Configuring OpenTelemetry
+
+Create a new file named `instrumentation.py` and add the following code:
+
+```python
+from opentelemetry import trace
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from fastapi import FastAPI
+
+def configure_tracer(app: FastAPI):
+    resource = Resource(attributes={
+        SERVICE_NAME: "my-fastapi-service" # Change this to your service name
+    })
+
+    tracer_provider = TracerProvider(resource=resource)
+    trace.set_tracer_provider(tracer_provider)
+
+    jaeger_exporter = JaegerExporter(
+        agent_host_name="localhost",  #  Jaeger agent host
+        agent_port=6831,  # Jaeger agent port
+    )
+
+    span_processor = BatchSpanProcessor(jaeger_exporter)
+    tracer_provider.add_span_processor(span_processor)
+
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=tracer_provider)
+    RequestsInstrumentor().instrument()
+
+```
+
+**Explanation:**
+
+*   **Resource:**  Defines metadata about the service being instrumented (e.g., service name). This helps identify the service in the tracing backend.
+*   **TracerProvider:**  Provides access to the tracer, which is responsible for creating spans.
+*   **JaegerExporter:** Configures the Jaeger exporter to send tracing data to a Jaeger instance.  You can configure `agent_host_name` and `agent_port` to point to your Jaeger instance. The default values are `localhost` and `6831` respectively, which are suitable if you're running Jaeger locally.
+*   **BatchSpanProcessor:**  Buffers spans before sending them to the exporter, improving performance.
+*   **FastAPIInstrumentor:**  Automatically instruments the FastAPI application, capturing information about incoming requests and responses.
+*   **RequestsInstrumentor:** Instruments the `requests` library to trace outgoing HTTP requests.
+
+## Step 4: Integrating OpenTelemetry with FastAPI
+
+Modify `main.py` to import and call the `configure_tracer` function from `instrumentation.py`:
+
+```python
+from fastapi import FastAPI
+from instrumentation import configure_tracer
+import requests
+
+app = FastAPI()
+configure_tracer(app)
+
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+
+
+@app.get("/call_external")
+async def call_external():
+    response = requests.get("https://httpbin.org/get") # An example external API
+    return {"message": "External API response", "data": response.json()}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+**Changes:**
+
+*   Imported `configure_tracer` from `instrumentation.py`.
+*   Called `configure_tracer(app)` before defining the routes.
+*   Added a new endpoint `/call_external` which makes a request to an external API using the `requests` library. This will demonstrate how OpenTelemetry traces requests across service boundaries.
+
+## Step 5: Running Jaeger (Optional but Recommended)
+
+The easiest way to run Jaeger is using Docker.  Run the following command in your terminal:
+
+```bash
+docker run -d -p 16686:16686 -p 6831:6831/udp jaegertracing/all-in-one:latest
+```
+
+This command will start a Jaeger instance in all-in-one mode, which is suitable for development and testing.  Jaeger's UI will be accessible at `http://localhost:16686`.
+
+## Step 6: Running the Application and Viewing Traces
+
+Now, run the FastAPI application:
+
+```bash
+python main.py
+```
+
+Visit the following endpoints in your browser or using `curl`:
+
+*   `http://localhost:8000/`
+*   `http://localhost:8000/call_external`
+
+After making these requests, open the Jaeger UI at `http://localhost:16686`.  You should see traces for your FastAPI application, including the requests to the `/` and `/call_external` endpoints.
+
+You can filter the traces by service name (`my-fastapi-service` in this example) and operation name (e.g., `GET /`).  Clicking on a trace will show you the individual spans, including the time spent in each operation and any relevant metadata.  For the `/call_external` endpoint, you'll see a span representing the request to `https://httpbin.org/get`.
+
+## Advanced Configuration and Customization
+
+### Adding Custom Attributes to Spans
+
+You can add custom attributes to spans to provide more context about the operations being traced. For example:
+
+```python
+from fastapi import FastAPI, Request
+from instrumentation import configure_tracer
+import requests
+from opentelemetry import trace
+
+app = FastAPI()
+configure_tracer(app)
+
+
+@app.get("/")
+async def root(request: Request):
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("my_custom_operation") as span:
+        span.set_attribute("http.client_ip", request.client.host)
+        return {"message": "Hello World"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+In this example, we create a custom span named "my_custom_operation" and add an attribute `http.client_ip` containing the client's IP address. This information will be visible in the Jaeger UI within the span details.
+
+### Propagating Context Across Services
+
+If you're calling other services from your FastAPI application, it's important to propagate the tracing context to ensure that the traces are correlated.  The `RequestsInstrumentor` automatically handles this when using the `requests` library.  However, if you are using other HTTP clients or message queues, you may need to manually propagate the context.
+
+### Sampling
+
+In production environments, you may want to sample traces to reduce the volume of data being collected.  You can configure the sampling strategy when initializing the `TracerProvider`.
+
+```python
+from opentelemetry.sdk.trace.sampling import TraceIdRatioBased
+
+# Sample 50% of traces
+sampler = TraceIdRatioBased(0.5)
+tracer_provider = TracerProvider(resource=resource, sampler=sampler)
+```
+
+### Choosing a Different Exporter
+
+OpenTelemetry supports various exporters, including:
+
+*   **Jaeger:**  As demonstrated in this guide.
+*   **Zipkin:** Another popular open-source distributed tracing system.
+*   **Prometheus:**  While primarily used for metrics, it can also be used to export trace data using the OTLP protocol.
+*   **OTLP:**  OpenTelemetry Protocol, a standardized protocol for exporting telemetry data.  Many observability platforms support OTLP.
+
+To use a different exporter, you need to install the corresponding package and configure the exporter in `instrumentation.py`.  For example, to use the Zipkin exporter:
+
+```bash
+pip install opentelemetry-exporter-zipkin
+```
+
+And in `instrumentation.py`:
+
+```python
+from opentelemetry.exporter.zipkin.json import ZipkinExporter
+
+zipkin_exporter = ZipkinExporter(
+    base_url="http://localhost:9411",  # Zipkin instance URL
+)
+
+span_processor = BatchSpanProcessor(zipkin_exporter)
+tracer_provider.add_span_processor(span_processor)
+```
+
+You will also need to run a Zipkin instance, for example using docker:
+
+```bash
+docker run -d -p 9411:9411 openzipkin/zipkin
+```
+
+## Best Practices
+
+*   **Use meaningful span names:**  Choose span names that accurately reflect the operations being performed.
+*   **Add relevant attributes:**  Include attributes that provide additional context about the operations, such as request parameters, user IDs, and database query information.
+*   **Propagate context:** Ensure that tracing context is propagated across service boundaries to correlate traces.
+*   **Sample traces in production:**  Use sampling to reduce the volume of data being collected in production environments.
+*   **Choose the right exporter:**  Select an exporter that integrates well with your observability backend.
+*   **Regularly review your instrumentation:** As your application evolves, regularly review your instrumentation to ensure that it is still providing the information you need.
+*   **Consider using an agent (e.g., OpenTelemetry Collector):** For more complex deployments, consider using an OpenTelemetry Collector to aggregate and process telemetry data before sending it to your observability backend. This can improve performance and reduce the load on your application.
+
+## Conclusion
+
+Integrating FastAPI with OpenTelemetry provides a powerful way to implement distributed tracing in your microservices applications. By tracking requests across different services, you can gain valuable insights into performance bottlenecks, dependencies, and the overall flow of execution. This information is essential for debugging issues, optimizing performance, and ensuring the reliability of your applications.  This guide provided you with the fundamental knowledge and steps to get started with OpenTelemetry and FastAPI.  Remember to adapt the configuration and instrumentation to your specific needs and environment.  Happy tracing!

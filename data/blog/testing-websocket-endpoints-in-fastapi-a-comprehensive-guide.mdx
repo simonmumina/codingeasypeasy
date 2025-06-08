@@ -1,0 +1,299 @@
+---
+title: 'Testing WebSocket Endpoints in FastAPI: A Comprehensive Guide'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags: ['fastapi', 'websocket', 'testing', 'pytest', 'asyncio', 'websockets']
+draft: false
+summary: 'Learn how to effectively test WebSocket endpoints in FastAPI applications using pytest, websockets library, and asyncio.  This comprehensive guide provides code examples and best practices for ensuring robust and reliable WebSocket functionality.'
+authors: ['default']
+---
+
+# Testing WebSocket Endpoints in FastAPI: A Comprehensive Guide
+
+FastAPI makes building web applications and APIs a breeze, including those using WebSockets. However, ensuring the reliability and correctness of your WebSocket endpoints is crucial. This blog post provides a detailed guide on how to test your WebSocket endpoints in FastAPI using `pytest`, the `websockets` library, and `asyncio`.
+
+## Why Test WebSocket Endpoints?
+
+WebSocket endpoints differ significantly from regular HTTP endpoints. They establish a persistent, bidirectional communication channel.  This brings unique testing challenges:
+
+*   **Statefulness:** WebSocket connections maintain state.  Tests need to account for this and manage the connection lifecycle properly.
+*   **Asynchronous Nature:**  WebSocket communication is inherently asynchronous. Testing requires asynchronous test functions and careful handling of concurrency.
+*   **Message Format and Content:**  Validating the format and content of messages sent and received is paramount.
+*   **Connection Lifecycle:**  Testing the connection establishment, termination, and handling of errors during the connection are essential.
+
+## Prerequisites
+
+Before diving in, ensure you have the following installed:
+
+*   **Python 3.7+:** FastAPI requires Python 3.6+, but using 3.7+ is highly recommended.
+*   **FastAPI:** `pip install fastapi`
+*   **Uvicorn:** `pip install uvicorn` (asynchronous server gateway interface)
+*   **pytest:** `pip install pytest`
+*   **pytest-asyncio:** `pip install pytest-asyncio` (for asynchronous tests)
+*   **websockets:** `pip install websockets` (for creating WebSocket clients)
+
+## Setting up a FastAPI WebSocket Endpoint
+
+Let's start with a simple FastAPI application that exposes a WebSocket endpoint:
+
+```python
+from fastapi import FastAPI, WebSocket
+
+app = FastAPI()
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"Message text was: {data}")
+    except Exception as e:
+        print(f"WebSocket Error: {e}")
+    finally:
+        await websocket.close()
+
+```
+
+This example defines a WebSocket endpoint at `/ws`.  It accepts a connection, then enters a loop:
+
+1.  It receives a text message from the client.
+2.  It sends back a message confirming receipt of the text.
+3.  The loop continues until the connection is closed or an exception occurs.
+
+## Writing Tests with pytest and websockets
+
+Now, let's write some tests for this endpoint. Create a file named `test_main.py` in the same directory as your FastAPI application (e.g., `main.py`).
+
+```python
+import asyncio
+import pytest
+import websockets
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+# Import your FastAPI app
+from .main import app  # Assuming your app is in main.py
+
+@pytest.fixture
+def test_client():
+    """Creates a test client for the FastAPI app."""
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.mark.asyncio
+async def test_websocket_connection(test_client):
+    """Tests the WebSocket connection establishment."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        assert websocket.open
+
+@pytest.mark.asyncio
+async def test_websocket_send_and_receive(test_client):
+    """Tests sending and receiving messages over the WebSocket connection."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        message = "Hello, WebSocket!"
+        await websocket.send(message)
+        response = await websocket.recv()
+        assert response == f"Message text was: {message}"
+
+
+@pytest.mark.asyncio
+async def test_websocket_close(test_client):
+    """Tests closing the WebSocket connection."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        await websocket.send("Closing Connection")
+        await websocket.close()
+        with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+            await websocket.recv() # Attempting to receive after closing raises an exception
+
+@pytest.mark.asyncio
+async def test_websocket_disconnection_from_server(test_client):
+  """Tests handling a disconnection from the server side."""
+  async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+    # Simulate server-side disconnect by setting a flag to immediately close in the endpoint code.
+    # This requires modifying the original websocket_endpoint function to include logic like:
+    #  if should_disconnect:
+    #       await websocket.close()
+    # Currently, this test will fail if the server doesn't actively disconnect.
+    try:
+        # Simulate server sending a disconnect signal (e.g., "CLOSE"). This requires adding handling for such a signal
+        # in the websocket endpoint and immediately closing the connection.  Currently, we send it, but our endpoint
+        # does nothing with it, so we just check we can send SOMETHING.
+        await websocket.send("CLOSE") # Sending 'CLOSE' message to simulate disconnection request
+        #await websocket.recv() # This might raise a ConnectionClosedOK exception depending on the server's implementation
+        # If the server properly closes the connection when it receives the disconnect signal.
+
+    except websockets.exceptions.ConnectionClosedError as e:
+      assert e.code == 1000 #Normal Closure
+      assert "CLOSE" in str(e)
+    except Exception as e:
+      print (f"Some other exception {e}")
+      assert False # Assert False to signal the test should fail if any unexpected exception occurs
+
+
+```
+
+**Explanation:**
+
+*   **`test_client` Fixture:** The `@pytest.fixture` decorator defines a fixture named `test_client`. This fixture creates a `TestClient` instance from FastAPI.  The `TestClient` is a convenient way to interact with your FastAPI application in tests.  It handles the application lifecycle. The `yield` keyword allows setup before the test (creating the client) and teardown after the test (the `with` block ensures it's closed).  This fixture is reused in multiple tests.
+
+*   **`@pytest.mark.asyncio`:** This decorator tells `pytest` to treat the test function as an asynchronous function. `pytest-asyncio` is required for this to work.
+
+*   **`websockets.connect()`:**  This function from the `websockets` library establishes a WebSocket connection to your FastAPI endpoint.  It is used within an `async with` block to ensure proper connection cleanup.
+
+*   **`websocket.send()` and `websocket.recv()`:** These methods send and receive data over the WebSocket connection.  They are asynchronous, so use `await`.
+
+*   **Assertions:** The tests use `assert` statements to verify expected behavior.  For example, `assert response == f"Message text was: {message}"` checks that the received message matches the expected response.
+
+*   **Error Handling:** `test_websocket_close` demonstrates how to test proper connection closure using `pytest.raises` to assert that receiving after closing raises `websockets.exceptions.ConnectionClosedOK`. `test_websocket_disconnection_from_server` shows one way to test disconnection from the server; more complex scenarios such as a server actively disconnecting the client require modifications to the core websocket endpoint to trigger the event.
+
+## Running the Tests
+
+1.  **Start your FastAPI application:** In your terminal, run:
+
+    ```bash
+    uvicorn main:app --reload
+    ```
+
+    (Replace `main` with the name of your Python file if it's different.)
+
+2.  **Run the tests:** In a separate terminal, in the same directory as `test_main.py`, run:
+
+    ```bash
+    pytest
+    ```
+
+    pytest will discover and run the tests in `test_main.py`.
+
+## Important Considerations and Best Practices
+
+*   **Clean Up:**  Always ensure proper connection closure to avoid resource leaks.  The `async with websockets.connect(...)` block handles this automatically.
+
+*   **Error Handling:**  Robustly handle potential errors during WebSocket communication.  Use `try...except` blocks to catch exceptions like connection errors, timeouts, and invalid message formats.
+
+*   **Message Format Validation:**  Thoroughly validate the format and content of messages received from the client.  Use libraries like `pydantic` to define schemas for your messages and validate them within your WebSocket endpoint.
+
+*   **Concurrency:**  Be mindful of concurrency issues in your WebSocket endpoint.  Use appropriate locking mechanisms if necessary to protect shared resources.  FastAPI's dependency injection system can help manage stateful dependencies safely.
+
+*   **Testing Complex Scenarios:**  For more complex WebSocket applications, consider testing scenarios such as:
+    *   Handling multiple concurrent connections.
+    *   Sending binary data.
+    *   Implementing reconnection logic.
+    *   Simulating network errors.
+    *   Load testing your WebSocket endpoints.
+
+* **Modify the endpoint based on server-side disconnects:** The test `test_websocket_disconnection_from_server` only works if you adapt your FastAPI endpoint to respond to the "CLOSE" message. The reason is that the test client by default does not actively send any close messages if there's no activity for some time.
+
+## Example: Testing with Pydantic for Message Validation
+
+Let's add a `pydantic` model to validate incoming messages and update the tests accordingly. First, install pydantic:
+
+```bash
+pip install pydantic
+```
+
+Now, modify your `main.py` to include a pydantic model:
+
+```python
+from fastapi import FastAPI, WebSocket
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class Message(BaseModel):
+    text: str
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_json()
+            try:
+                message = Message(**data)
+                await websocket.send_text(f"Message text was: {message.text}")
+            except ValueError as e:
+                await websocket.send_text(f"Invalid message format: {e}")
+    except Exception as e:
+        print(f"WebSocket Error: {e}")
+    finally:
+        await websocket.close()
+
+```
+
+And modify `test_main.py` to send JSON messages:
+
+```python
+import asyncio
+import json
+import pytest
+import websockets
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+# Import your FastAPI app
+from .main import app  # Assuming your app is in main.py
+
+@pytest.fixture
+def test_client():
+    """Creates a test client for the FastAPI app."""
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.mark.asyncio
+async def test_websocket_connection(test_client):
+    """Tests the WebSocket connection establishment."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        assert websocket.open
+
+@pytest.mark.asyncio
+async def test_websocket_send_and_receive_json(test_client):
+    """Tests sending and receiving messages over the WebSocket connection with JSON format."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        message_text = "Hello, WebSocket!"
+        message = {"text": message_text}
+        await websocket.send(json.dumps(message))  # Send JSON string
+        response = await websocket.recv()
+        assert response == f"Message text was: {message_text}"
+
+
+@pytest.mark.asyncio
+async def test_websocket_invalid_json(test_client):
+    """Tests the handling of invalid JSON messages."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        invalid_message = {"invalid_key": "Hello"}
+        await websocket.send(json.dumps(invalid_message))
+        response = await websocket.recv()
+        assert "Invalid message format" in response
+
+
+@pytest.mark.asyncio
+async def test_websocket_close(test_client):
+    """Tests closing the WebSocket connection."""
+    async with websockets.connect(f"ws://localhost:8000/ws") as websocket:
+        message = {"text": "Closing Connection"}
+        await websocket.send(json.dumps(message))
+        await websocket.close()
+        with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+            await websocket.recv()
+
+```
+
+This example demonstrates how to:
+
+1.  Define a `pydantic` model (`Message`) to represent the expected structure of incoming messages.
+2.  Receive data as JSON using `await websocket.receive_json()`.
+3.  Parse the JSON data into the `Message` model.
+4.  Handle `ValueError` exceptions that occur when the JSON data does not match the model's schema.
+5.  Send JSON data using `json.dumps()`.
+6.  Test with valid and invalid JSON messages to assert the application correctly handles both cases.
+
+## Conclusion
+
+Testing WebSocket endpoints in FastAPI is crucial for ensuring the reliability and robustness of your applications. By using `pytest`, the `websockets` library, and `asyncio`, you can create comprehensive tests that cover various scenarios, including connection establishment, message handling, and error handling. Remember to consider the stateful and asynchronous nature of WebSockets and validate the format and content of your messages for optimal testing. The addition of Pydantic allows for enhanced validation and clearer test assertions.  With these techniques, you can confidently build and deploy robust WebSocket applications with FastAPI.

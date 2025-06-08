@@ -1,0 +1,280 @@
+---
+title: "Pydantic @validator: Advanced Data Validation in FastAPI for Robust APIs"
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['pydantic', 'fastapi', 'data validation', 'api development', 'python', 'backend', 'validator']
+draft: false
+summary: "Learn how to use Pydantic's @validator decorator effectively for complex data validation in FastAPI. Build robust and reliable APIs with custom validation logic, handling edge cases, and ensuring data integrity."
+authors: ['default']
+---
+
+# Pydantic `@validator`: Advanced Data Validation in FastAPI for Robust APIs
+
+Building robust APIs requires rigorous data validation.  Ensuring that the data your API receives is clean, consistent, and adheres to your defined rules is crucial for the stability and reliability of your application.  Pydantic, combined with FastAPI, provides a powerful and elegant way to handle data validation.  This blog post dives deep into using Pydantic's `@validator` decorator for complex data validation scenarios in FastAPI.
+
+## What is Pydantic and Why Use It with FastAPI?
+
+[Pydantic](https://pydantic-docs.helpmanual.io/) is a Python library for data validation and settings management using Python type hints.  It enforces type hints at runtime, ensuring data conforms to your expected structure.  Key benefits of Pydantic include:
+
+*   **Data Validation:**  Automatically validates data based on your type hints and custom rules.
+*   **Data Serialization/Deserialization:**  Seamlessly converts data between Python objects and other formats (e.g., JSON).
+*   **Clear Error Messages:**  Provides informative error messages when validation fails, simplifying debugging.
+
+[FastAPI](https://fastapi.tiangolo.com/) is a modern, high-performance web framework for building APIs with Python 3.7+ based on standard Python type hints.  FastAPI leverages Pydantic for data validation and serialization, making it easy to define API request and response models with built-in validation.  FastAPI's tight integration with Pydantic simplifies the process of creating type-safe and reliable APIs.
+
+## Understanding the `@validator` Decorator
+
+Pydantic's `@validator` decorator allows you to define custom validation logic that goes beyond simple type checking.  It provides a way to create functions that are automatically called when Pydantic validates a field.  These validator functions can:
+
+*   Perform custom checks on field values.
+*   Transform field values.
+*   Raise `ValueError` exceptions to indicate validation failures.
+*   Access other fields within the same Pydantic model.
+
+### Basic Usage
+
+Let's start with a simple example:
+
+```python
+from pydantic import BaseModel, validator, ValidationError
+from typing import Optional
+from datetime import datetime
+
+class Item(BaseModel):
+    name: str
+    price: float
+    description: Optional[str] = None
+    tax: Optional[float] = None
+
+    @validator('price')
+    def price_must_be_positive(cls, value):
+        if value <= 0:
+            raise ValueError('Price must be positive')
+        return value
+
+try:
+    item = Item(name="Example Item", price=-10.0)
+except ValidationError as e:
+    print(e)
+```
+
+In this example, the `@validator('price')` decorator tells Pydantic to call the `price_must_be_positive` function whenever the `price` field is validated.  If the price is not positive, a `ValueError` is raised, causing the validation to fail. The first argument passed to the validator function is always the class (`cls`) itself. The second argument is the value being validated. You can return the (possibly modified) value, or raise a `ValueError` to indicate that the value is invalid.
+
+###  Key Parameters of `@validator`
+
+*   **`*fields`**:  The names of the fields to validate. You can validate multiple fields with a single validator.
+*   **`pre=False`**:  If `True`, the validator runs *before* the default type validation. This is useful for transforming data before type checking.
+*   **`always=False`**:  If `True`, the validator always runs, even if the field is not present in the input data. Useful for enforcing default values or performing cross-field validation.
+*   **`each_item=False`**: If `True`, the validator will be applied to each item in a sequence (like a list or tuple).  This is especially useful for validating lists of values.
+*   **`allow_reuse=False`**: If `True`, the validator will be reused when the model is used in other models.
+
+## Advanced Data Validation Scenarios
+
+Let's explore more complex scenarios where `@validator` shines.
+
+### 1. Cross-Field Validation
+
+Often, you need to validate data based on the values of *other* fields within the same model.  For example, let's say you have a model for events, and the `end_time` must be after the `start_time`.
+
+```python
+from pydantic import BaseModel, validator
+from datetime import datetime
+
+class Event(BaseModel):
+    start_time: datetime
+    end_time: datetime
+
+    @validator('end_time')
+    def end_time_must_be_after_start_time(cls, end_time, values):
+        start_time = values.get('start_time')  # Access other field values
+        if start_time and end_time <= start_time:
+            raise ValueError('End time must be after start time')
+        return end_time
+
+# Example usage within FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi import Body
+
+app = FastAPI()
+
+@app.post("/events/")
+async def create_event(event: Event = Body(...)):
+    return event
+
+
+# Test cases
+try:
+    event = Event(start_time=datetime(2024, 10, 26, 10, 0, 0), end_time=datetime(2024, 10, 26, 9, 0, 0))
+except ValidationError as e:
+    print(e)
+
+event = Event(start_time=datetime(2024, 10, 26, 10, 0, 0), end_time=datetime(2024, 10, 26, 11, 0, 0))
+print(event)
+```
+
+Here, `values` is a dictionary containing the values of all fields in the model.  We use `values.get('start_time')` to access the `start_time` value. Note the `.get()` method is used in case `start_time` is not set for some reason.  We compare `end_time` to `start_time` and raise a `ValueError` if the validation fails.
+
+### 2. Validating List Elements
+
+The `each_item=True` parameter is perfect for validating individual elements within a list.  Let's say you have a list of email addresses that need to be validated.
+
+```python
+from pydantic import BaseModel, validator, ValidationError
+from typing import List
+import re
+
+class User(BaseModel):
+    emails: List[str]
+
+    @validator('emails', each_item=True)
+    def validate_email(cls, email):
+        if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+            raise ValueError(f"Invalid email address: {email}")
+        return email
+
+
+try:
+    user = User(emails=['test@example.com', 'invalid-email', 'another@example.net'])
+except ValidationError as e:
+    print(e)
+
+user = User(emails=['valid@example.com', 'another.valid@example.net'])
+print(user)
+```
+
+In this example, the `validate_email` function is called for *each* email address in the `emails` list.  The `re.match` function is used to validate the email format using a regular expression. If an email is invalid, a `ValueError` is raised.
+
+### 3. Pre-Validation Transformations
+
+Sometimes, you need to transform data *before* it's validated.  This is where `pre=True` comes in handy.  For example, let's say you want to convert a string to lowercase before validating it.
+
+```python
+from pydantic import BaseModel, validator
+
+class Item(BaseModel):
+    name: str
+
+    @validator('name', pre=True)
+    def convert_to_lowercase(cls, value):
+        if isinstance(value, str):
+            return value.lower()
+        return value  # Handle non-string inputs gracefully
+
+    @validator('name')
+    def name_must_not_be_empty(cls, value):
+      if not value:
+        raise ValueError("Name cannot be empty.")
+      return value
+
+item = Item(name="Awesome ITEM")
+print(item)
+item2 = Item(name="")
+print(item2)
+```
+
+In this example, `convert_to_lowercase` is called *before* the default type validation.  It converts the `name` to lowercase if it's a string.  This is useful for normalizing data before applying further validation rules. The `name_must_not_be_empty` validator then validates that the (now lowercase) name is not empty.
+
+### 4. Handling Optional Fields with `always=True`
+
+If a field is optional (e.g., `Optional[str]`) and you want to perform validation even if it's not provided in the input data, use `always=True`. This is particularly useful for setting default values or enforcing certain conditions regardless of whether the field is explicitly provided.
+
+```python
+from pydantic import BaseModel, validator, ValidationError
+from typing import Optional
+
+class UserProfile(BaseModel):
+    bio: Optional[str] = None
+    is_active: bool = True  # Default value
+
+    @validator('bio', always=True)
+    def set_default_bio(cls, value):
+        if value is None:
+            return "No bio provided."
+        return value
+
+try:
+    profile = UserProfile()
+    print(profile)
+except ValidationError as e:
+    print(e)
+
+profile = UserProfile(bio="A short bio.")
+print(profile)
+```
+
+In this case, if the `bio` field is not provided during initialization, the `set_default_bio` validator will execute and set the default value to "No bio provided.". The `is_active` field shows how to include default values directly in the model definition.
+
+### 5.  Using `allow_reuse=True` for reusable Validators
+
+If you have a validator function that you want to reuse across multiple Pydantic models, set `allow_reuse=True`. This prevents Pydantic from creating a new validator instance each time, improving performance.  Note: Ensure your validator is stateless and doesn't rely on any mutable global state.
+
+```python
+from pydantic import BaseModel, validator
+
+def validate_string_length(value: str) -> str:
+    if len(value) > 50:
+        raise ValueError("String exceeds maximum length of 50 characters.")
+    return value
+
+class ModelA(BaseModel):
+    field_a: str
+
+    _validate_field_a = validator('field_a', allow_reuse=True)(validate_string_length)
+
+
+class ModelB(BaseModel):
+    field_b: str
+
+    _validate_field_b = validator('field_b', allow_reuse=True)(validate_string_length)
+
+model_a = ModelA(field_a="This is a valid string.")
+print(model_a)
+model_b = ModelB(field_b="This is also a valid string.")
+print(model_b)
+```
+
+In this example, `validate_string_length` is reused for both `ModelA` and `ModelB`.
+
+## Best Practices
+
+*   **Keep Validators Focused:**  Each validator should ideally handle a single, specific validation rule.
+*   **Provide Informative Error Messages:**  Make sure your `ValueError` exceptions have clear and helpful error messages to assist with debugging.
+*   **Handle Edge Cases:**  Consider all possible edge cases and ensure your validators handle them gracefully.
+*   **Use Type Hints:**  Leverage Python type hints to provide Pydantic with as much information as possible about the expected data types.
+*   **Test Your Validators:**  Write unit tests to thoroughly test your validators and ensure they are working correctly.
+*   **Consider Security:**  When validating user input, be mindful of potential security vulnerabilities such as injection attacks. Sanitize or escape data as necessary.
+*   **Avoid Side Effects:** Validator functions should ideally be pure functions, avoiding side effects that might affect the overall application state.
+
+## FastAPI Integration
+
+Pydantic models seamlessly integrate with FastAPI. You can use them as request body models, query parameters, path parameters, and response models. FastAPI automatically uses Pydantic to validate incoming data and serialize outgoing data.
+
+```python
+from fastapi import FastAPI, Body, HTTPException
+from pydantic import BaseModel, validator
+from typing import Optional
+
+app = FastAPI()
+
+class Item(BaseModel):
+    name: str
+    price: float
+    description: Optional[str] = None
+
+    @validator('price')
+    def price_must_be_positive(cls, value):
+        if value <= 0:
+            raise ValueError('Price must be positive')
+        return value
+
+
+@app.post("/items/")
+async def create_item(item: Item = Body(...)):
+    return item
+```
+
+If the request body doesn't conform to the `Item` model, FastAPI will automatically return an HTTP 422 Unprocessable Entity error with detailed validation errors.
+
+## Conclusion
+
+Pydantic's `@validator` decorator is a powerful tool for implementing complex data validation logic in FastAPI. By using validators effectively, you can build robust and reliable APIs that handle data with confidence.  This allows you to write cleaner, more maintainable code and reduce the risk of errors in your applications.  By following the best practices and exploring the advanced scenarios outlined in this blog post, you can master the art of data validation with Pydantic and FastAPI.  Remember to always test your validators thoroughly to ensure they are working as expected and to prevent unexpected behavior in your APIs.

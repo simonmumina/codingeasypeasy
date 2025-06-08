@@ -1,0 +1,371 @@
+---
+title: 'Preventing Mass Assignment Vulnerabilities in Pydantic Models and FastAPI'
+date: '2024-01-26'
+lastmod: '2024-01-26'
+tags: ['pydantic', 'fastapi', 'security', 'mass assignment', 'vulnerability', 'python', 'web development', 'api security']
+draft: false
+summary: 'Learn how to prevent mass assignment vulnerabilities in your FastAPI applications using Pydantic models. Discover best practices and code examples to secure your APIs against malicious data manipulation.'
+authors: ['default']
+---
+
+# Preventing Mass Assignment Vulnerabilities in Pydantic Models and FastAPI
+
+Mass assignment vulnerabilities are a common security risk in web applications, allowing attackers to modify fields in your database that they shouldn't have access to. This blog post will guide you through understanding and preventing mass assignment vulnerabilities in FastAPI applications that leverage Pydantic models for data validation.
+
+## What is Mass Assignment?
+
+Mass assignment occurs when an application allows a user to set multiple object properties at once, often from user-provided data like a form or API request.  If not handled carefully, this can allow attackers to modify fields they shouldn't have access to, leading to data breaches, privilege escalation, or other malicious outcomes.
+
+Imagine an API endpoint for updating a user profile.  If the code naively accepts a JSON payload and directly updates the user object with all the provided keys, an attacker might include fields like `is_admin` or `account_balance` in the payload, potentially elevating their privileges or stealing funds if those fields are not properly protected.
+
+## Why Pydantic and FastAPI are Vulnerable
+
+While Pydantic and FastAPI provide excellent data validation and serialization, they don't automatically prevent mass assignment vulnerabilities. By default, Pydantic models will happily accept and validate any fields present in the input data that match the model's fields. This flexibility is a strength, but it also means you need to be mindful of security.  FastAPI builds upon this by seamlessly integrating Pydantic models for request and response data, making it easy to inadvertently expose your application to this vulnerability.
+
+## Strategies to Prevent Mass Assignment
+
+Here are several strategies to prevent mass assignment vulnerabilities in your Pydantic and FastAPI applications:
+
+**1. Explicitly Define Allowed Fields (Allowlist/Whitelist)**
+
+The most robust defense is to explicitly define the allowed fields for each endpoint. This is often referred to as an "allowlist" or "whitelist" approach.  You can achieve this by:
+
+   *   **Creating Specific Request Models:**  Instead of using a generic model for all API operations, create specific Pydantic models tailored to each endpoint and operation. These models should only include the fields that are allowed to be updated.
+
+   *   **Using `exclude_unset=True`:** When serializing models for database updates, use the `exclude_unset=True` argument to prevent updating fields that were not explicitly provided in the request. This protects existing data from being overwritten with default values.  However, this doesn't *prevent* the mass assignment attempt; it just mitigates its impact on existing data.
+
+**Code Example:**
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional
+from datetime import datetime
+
+app = FastAPI()
+
+# Database (in-memory for demonstration)
+users = {
+    1: {"id": 1, "username": "testuser", "email": "test@example.com", "is_admin": False, "account_balance": 100},
+    2: {"id": 2, "username": "anotheruser", "email": "another@example.com", "is_admin": False, "account_balance": 50}
+}
+
+class User(BaseModel):
+    id: int
+    username: str
+    email: str
+    is_admin: bool = Field(default=False, description="Is this user an administrator?")
+    account_balance: float = Field(default=0.0, description="User's account balance.")
+    created_at: datetime = datetime.now()
+
+
+class UserUpdate(BaseModel):
+    """
+    Model for updating user information.  Only allows updating username and email.
+    """
+    username: Optional[str] = None
+    email: Optional[str] = None
+
+
+@app.put("/users/{user_id}", response_model=User)
+async def update_user(user_id: int, user_update: UserUpdate):
+    """
+    Updates a user's username and email.
+    """
+    user = users.get(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Update only the allowed fields
+    for key, value in user_update.dict(exclude_unset=True).items():
+        user[key] = value
+
+    users[user_id] = user  # Update in "database"
+
+    return user
+
+
+
+@app.get("/users/{user_id}", response_model=User)
+async def get_user(user_id: int):
+    user = users.get(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+
+# Test:
+# Send a PUT request to /users/1 with the following JSON payload:
+# {
+#   "username": "newusername",
+#   "email": "newemail@example.com",
+#   "is_admin": true,  <-- This will be ignored
+#   "account_balance": 9999  <-- This will be ignored
+# }
+#
+# The response will only update username and email. is_admin and account_balance will not be affected.
+
+# Send a GET request to /users/1 to verify the changes.
+```
+
+In this example, the `UserUpdate` model *only* allows the `username` and `email` fields to be updated. Attempting to modify `is_admin` or `account_balance` will be ignored.  This is a crucial step in preventing mass assignment.
+
+**2. Use Field Aliases and Validation**
+
+You can use Pydantic's `Field` type to define aliases for fields and apply validation constraints. This allows you to rename fields in your API to prevent direct mapping to database columns and to add validation rules to ensure that only valid data is accepted.
+
+**Code Example:**
+
+```python
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel, Field, validator
+from typing import Optional
+
+app = FastAPI()
+
+
+class UserCreate(BaseModel):
+    user_name: str = Field(alias="username", title="Username")  # Alias 'username'
+    email_address: str = Field(alias="email", title="Email")    # Alias 'email'
+    password: str = Field(..., min_length=8, title="Password")   # Required, min length
+    is_admin: bool = Field(False, const=True, description="This field can not be set by user, this should be set by admin explicitly.")
+
+
+    @validator("email_address")  # Validate email format
+    def validate_email(cls, email):
+        if "@" not in email:
+            raise ValueError("Invalid email format")
+        return email
+
+@app.post("/users/")
+async def create_user(user: UserCreate):
+    print(user.dict()) # This will use the field alias
+
+    #Normally user will be saved in database here and hash the password.
+    return {"message": "User created successfully", "user": user}
+
+# Test:
+# Send a POST request to /users/ with the following JSON payload:
+# {
+#   "username": "testuser",
+#   "email": "test@example.com",
+#   "password": "securepassword",
+#   "is_admin": true  # This will still be validated by the model, but ignored by the database
+# }
+
+# The response will use the alias in the model.
+
+```
+
+In this example:
+
+*   We use aliases (`username`, `email`) to map the API request to internal field names (`user_name`, `email_address`).  This helps decouple your API from your database schema.
+
+*   The `is_admin` field is set to be a const with `const=True`.  Attempting to override it with a different value will cause validation to fail. This ensures that users cannot set the `is_admin` field.
+
+*   Email format validation is added using a Pydantic validator.
+
+**3. Use Depends with Permissions**
+
+For critical fields like `is_admin`, implement robust permission checks using FastAPI's `Depends` system.  Only allow authorized users to modify these fields.
+
+**Code Example:**
+
+```python
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel, Field
+from typing import Optional
+
+app = FastAPI()
+
+class User(BaseModel):
+    id: int
+    username: str
+    email: str
+    is_admin: bool = Field(default=False, description="Is this user an administrator?")
+
+# Sample Authentication/Authorization Logic (Replace with your actual implementation)
+async def get_current_user(token: str = "dummy_token"): # Replace "dummy_token" with your actual authentication
+    # Replace with your actual authentication logic
+    if token != "admin_token":
+        return {"id": 1, "username": "normal_user", "email": "normal@example.com", "is_admin": False}
+    else:
+        return {"id": 2, "username": "admin_user", "email": "admin@example.com", "is_admin": True}
+
+
+async def is_admin(current_user: dict = Depends(get_current_user)):
+    if not current_user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return current_user
+
+
+class AdminUserUpdate(BaseModel):
+  """
+  Model used only when updating a users admin status.
+  """
+  is_admin: bool
+
+
+@app.put("/users/{user_id}/admin", dependencies=[Depends(is_admin)])
+async def update_user_admin_status(user_id: int, user_update: AdminUserUpdate):
+    """
+    Updates a user's admin status.  Requires admin privileges.
+    """
+    # Replace this with your database update logic
+    print(f"Updating user {user_id} admin status to {user_update.is_admin}")
+
+    # In a real application, you would update the database here.
+    return {"message": f"User {user_id} admin status updated to {user_update.is_admin}"}
+
+# Testing:
+# You'll need to implement your actual authentication and authorization logic.
+# Send PUT requests to /users/{user_id}/admin with different tokens to simulate different user roles.
+# Try with a normal user token ("dummy_token") - should return a 403 Forbidden error.
+# Try with an admin token ("admin_token") - should successfully update the admin status.
+
+```
+
+In this example:
+
+*   The `/users/{user_id}/admin` endpoint is protected by the `is_admin` dependency, which requires the current user to be an administrator.
+*   Only authenticated admins can modify the `is_admin` field.  A `UserUpdate` model is created specifically for this purpose.
+*   Any other user trying to update the admin status will get a `403 Forbidden` error.  This prevents unauthorized access to critical fields.
+
+**4. Use `extra='forbid'` for strict validation**
+
+Pydantic models support the `extra` configuration option, which controls how extra fields (fields not defined in the model) are handled.  Setting `extra='forbid'` will raise a `ValidationError` if the input data contains any extra fields.  This provides a strong safeguard against unexpected or malicious fields being included in the request.
+
+**Code Example:**
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ValidationError, Field
+
+app = FastAPI()
+
+class StrictUserUpdate(BaseModel):
+    username: str
+    email: str
+
+    class Config:
+        extra = 'forbid'  # Forbid extra fields
+
+@app.put("/strict_update_user/{user_id}")
+async def strict_update_user(user_id: int, user_update: StrictUserUpdate):
+    """
+    Updates user information with strict validation.
+    Raises an error if extra fields are present in the request.
+    """
+    # Normally user will be saved in database here and hash the password.
+    return {"message": "User updated successfully", "user": user_update}
+
+
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request, exc):
+  print(f"OMG! The client sent invalid data!: {exc}")
+  return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content=jsonable_encoder({"detail": exc.errors()}),
+        )
+
+
+# Test:
+# Send a PUT request to /strict_update_user/1 with the following JSON payload:
+# {
+#   "username": "newusername",
+#   "email": "newemail@example.com",
+#   "is_admin": true  <-- This will cause a ValidationError
+# }
+
+# The server will return a 422 Unprocessable Entity error with a detailed validation message.
+
+```
+
+In this example, any request to `/strict_update_user/{user_id}` that includes fields other than `username` and `email` will result in a `ValidationError` being raised. This prevents attackers from injecting unexpected fields into the data.
+
+**5. Use a Data Transfer Object (DTO) pattern**
+
+The Data Transfer Object (DTO) pattern can help separate your API data from your database model. This prevents direct mapping between API fields and database columns. DTOs act as an intermediary, allowing you to control which data is passed to the database and validate the format.  This also helps decouple your API from your data model allowing you to change the API independently of changes to your database.
+
+**Code Example (Conceptual):**
+
+```python
+# In this example the ORM layer would be SQLAlchemy or similar
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+
+
+app = FastAPI()
+
+class UserDTO(BaseModel):
+    id: Optional[int] = None
+    username: str
+    email: str
+
+#Imagine this is your SQLAlchemy Database Model
+class UserModel(BaseModel):
+  id: int
+  username: str
+  email: str
+  is_admin: bool
+
+  #Database Layer Mock
+  async def get_user(user_id: int):
+    return UserModel(id=1, username="DatabaseUser", email="database@email.com", is_admin=False)
+
+  async def update_user(user_id: int, user:UserDTO):
+    #Here you can update the database.
+    print(f"Update the user id: {user_id}, with user {user}")
+
+
+@app.put("/dtos_user/{user_id}")
+async def update_user(user_id: int, user_data: UserDTO):
+  #Perform data validation
+
+  db_user = await UserModel.get_user(user_id) #Load from database
+
+  if db_user is None:
+    raise HTTPException(status_code=404, detail="User not found")
+
+  #Transfer the data from the DTO to the ORM Model
+  #You can validate data here also.
+  db_user.username = user_data.username
+  db_user.email = user_data.email
+
+  #Update database.
+  await UserModel.update_user(user_id, user_data)
+
+  return {"message": "User updated successfully", "user": db_user}
+
+# Testing
+#Send PUT Request to the endpoint /dtos_user/1 with the body below.
+#This way you expose only the parameters from the DTO and you avoid exposing any parameter of the ORM.
+# {
+#     "username": "new_username",
+#     "email": "new_email@example.com"
+# }
+```
+
+This example shows the separation of concerns between the DTO, which handles API requests, and the UserModel, which represents the database structure.  The `update_user` endpoint validates the incoming data from the DTO and then selectively updates the corresponding fields in the database model. This adds a layer of indirection that can prevent accidental exposure of sensitive database fields.
+
+## Best Practices Checklist
+
+*   **Always use specific request models:**  Avoid using generic models for different API operations. Create models tailored to each endpoint.
+
+*   **Explicitly define allowed fields:**  Use allowlists to restrict which fields can be updated.
+
+*   **Validate user input:**  Use Pydantic validators to ensure that data meets your requirements.
+
+*   **Implement authorization checks:**  Use `Depends` to protect sensitive fields and ensure that only authorized users can modify them.
+
+*   **Enable `extra='forbid'`:** Prevent unexpected fields from being included in requests.
+
+*   **Use DTOs to decouple API from data model:**  Isolate your API from your database schema by using Data Transfer Objects.
+
+*   **Regularly review your code:** Conduct security audits and code reviews to identify and address potential vulnerabilities.
+
+## Conclusion
+
+By implementing these strategies, you can significantly reduce the risk of mass assignment vulnerabilities in your FastAPI applications.  Remember that security is an ongoing process, and vigilance is crucial to protecting your data and users.  Always stay updated on the latest security best practices and adapt your approach as new threats emerge. Properly using Pydantic and FastAPI, with a focus on security, will significantly improve the resilience and integrity of your application.

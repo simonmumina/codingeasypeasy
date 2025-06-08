@@ -1,0 +1,323 @@
+---
+title: 'FastAPI WebSocket: Broadcasting Messages to All Connected Clients'
+date: '2024-01-26'
+lastmod: '2024-01-26'
+tags: ['fastapi', 'websocket', 'broadcasting', 'realtime', 'python', 'asyncio']
+draft: false
+summary: 'Learn how to implement WebSocket broadcasting in FastAPI to send real-time messages to all connected clients. This guide provides a step-by-step explanation with code examples for building interactive and collaborative applications.'
+authors: ['default']
+---
+
+# FastAPI WebSocket: Broadcasting Messages to All Connected Clients
+
+WebSockets provide a persistent, two-way communication channel between a client and a server. This makes them ideal for building real-time applications like chat applications, live dashboards, collaborative editing tools, and more.  FastAPI, with its modern, fast (high-performance), web framework for building APIs with Python 3.7+ based on standard Python type hints, offers excellent support for WebSockets.  This guide dives into how to implement WebSocket broadcasting in FastAPI, enabling you to send messages to all connected clients simultaneously.
+
+## What is WebSocket Broadcasting?
+
+WebSocket broadcasting involves sending a single message from the server to multiple connected clients.  Instead of sending individual messages to each client, a single "broadcast" message is sent, and the server handles distributing it to all active connections. This approach is significantly more efficient than iterating and sending messages individually, especially when dealing with a large number of connected clients.
+
+## Prerequisites
+
+Before we start, ensure you have the following installed:
+
+*   **Python 3.7 or higher:**  FastAPI leverages Python's type hints, which were introduced in Python 3.6, and are significantly improved in later versions.
+*   **FastAPI:**  `pip install fastapi`
+*   **Uvicorn:**  An ASGI server to run your FastAPI application. `pip install uvicorn`
+
+## Basic WebSocket Endpoint in FastAPI
+
+First, let's establish a basic WebSocket endpoint using FastAPI:
+
+```python
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI()
+
+html = """
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Chat</title>
+    </head>
+    <body>
+        <h1>WebSocket Chat</h1>
+        <form action="" onsubmit="sendMessage(event)">
+            <input type="text" id="messageText" autocomplete="off"/>
+            <button>Send</button>
+        </form>
+        <ul id='messages'>
+        </ul>
+        <script>
+            var ws = new WebSocket(`ws://localhost:8000/ws`);
+            ws.onmessage = function(event) {
+                var messages = document.getElementById('messages')
+                var message = document.createElement('li')
+                var content = document.createTextNode(event.data)
+                message.appendChild(content)
+                messages.appendChild(message)
+            };
+            function sendMessage(event) {
+                var input = document.getElementById("messageText")
+                ws.send(input.value)
+                input.value = ''
+                event.preventDefault()
+            }
+        </script>
+    </body>
+</html>
+"""
+
+
+@app.get("/")
+async def get():
+    return HTMLResponse(html)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await websocket.send_text(f"Message text was: {data}") #Echo back the message
+    except Exception as e:
+        print(f"Error in websocket: {e}")
+    finally:
+        print("WebSocket Disconnected")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+This code defines a simple FastAPI application with:
+
+1.  A route `/` that serves a basic HTML page containing a form to send messages and a list to display received messages.
+2.  A WebSocket endpoint `/ws` that:
+    *   Accepts the WebSocket connection.
+    *   Continuously receives text messages from the client.
+    *   Echoes back the received message to the same client.
+
+To run this, save the code as `main.py` and execute `uvicorn main:app --reload`. You can then access the application at `http://localhost:8000` in your browser.
+
+## Implementing WebSocket Broadcasting
+
+To implement broadcasting, we need to manage connected clients and send messages to all of them.  Here's how we can modify the previous code:
+
+```python
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI()
+
+html = """
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Chat</title>
+    </head>
+    <body>
+        <h1>WebSocket Chat</h1>
+        <form action="" onsubmit="sendMessage(event)">
+            <input type="text" id="messageText" autocomplete="off"/>
+            <button>Send</button>
+        </form>
+        <ul id='messages'>
+        </ul>
+        <script>
+            var ws = new WebSocket(`ws://localhost:8000/ws`);
+            ws.onmessage = function(event) {
+                var messages = document.getElementById('messages')
+                var message = document.createElement('li')
+                var content = document.createTextNode(event.data)
+                message.appendChild(content)
+                messages.appendChild(message)
+            };
+            function sendMessage(event) {
+                var input = document.getElementById("messageText")
+                ws.send(input.value)
+                input.value = ''
+                event.preventDefault()
+            }
+        </script>
+    </body>
+</html>
+"""
+
+manager = {} # Using a dictionary to store websocket connections for each client.  Easily scales up with additional metadata.
+
+@app.get("/")
+async def get():
+    return HTMLResponse(html)
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: int):
+    await websocket.accept()
+    try:
+        manager[client_id] = websocket
+        while True:
+            data = await websocket.receive_text()
+            await broadcast(f"Client #{client_id} says: {data}", exclude=client_id) # Broadcast the message
+            await websocket.send_text(f"You said: {data}") #Echo it back to the sender.
+    except Exception as e:
+        print(f"Error in websocket: {e}")
+    finally:
+        del manager[client_id]
+        print(f"Client #{client_id} disconnected")
+
+
+
+async def broadcast(message: str, exclude: int = None):
+    """Broadcasts a message to all connected clients, optionally excluding a specific client."""
+    for client_id, connection in manager.items():
+        if client_id != exclude:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                print(f"Failed to send message to client {client_id}: {e}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+Key changes and explanations:
+
+1.  **`manager = {}`**:  A dictionary to store active WebSocket connections.  The keys are `client_id` (integers) and the values are WebSocket objects. This allows us to easily access and iterate through connected clients. A dictionary is used for its O(1) lookup time.
+2.  **`@app.websocket("/ws/{client_id}")`**: We add a path parameter for the `client_id`.  Each client will need a unique ID. This lets us uniquely identify each connection, which is critical for targeted messaging and excluding the sender from broadcasts (avoiding the sender getting the same message twice).
+3.  **`manager[client_id] = websocket`**:  When a new WebSocket connection is established, we add it to the `manager` dictionary, associating it with the client's ID.
+4.  **`await broadcast(f"Client #{client_id} says: {data}", exclude=client_id)`**: Instead of echoing the message back to the sender, we now call the `broadcast` function.  The `exclude` parameter is set to the current `client_id` to prevent the sender from receiving their own message via the broadcast.
+5.  **`del manager[client_id]`**:  When a WebSocket connection is closed (in the `finally` block), we remove it from the `manager` dictionary, ensuring we don't try to send messages to a disconnected client.
+6.  **`broadcast(message: str, exclude: int = None)`**: This asynchronous function iterates through all WebSocket connections in the `manager` dictionary and sends the provided `message` to each connected client, *except* the client whose `client_id` matches the `exclude` parameter. A try-except block is included to gracefully handle cases where a client might have disconnected in the middle of a broadcast.
+
+To test this, you will need to open multiple browser windows (or use a WebSocket client like wscat) and connect to `ws://localhost:8000/ws/1`, `ws://localhost:8000/ws/2`, `ws://localhost:8000/ws/3`, etc.  Replace the numbers after `/ws/` with unique client IDs.  When you send a message from one client, all other connected clients will receive it.  The sending client will also receive a message 'You said: ...' via the echo.
+
+## Scalability and Considerations
+
+The above implementation works well for small to medium-sized applications. However, for larger applications with a massive number of concurrent connections, consider the following:
+
+*   **ASGI Servers:** Uvicorn is a good starting point, but explore other ASGI servers like Hypercorn or Daphne for improved performance and scalability. Configure the number of worker processes appropriately for your hardware.
+
+*   **Message Queues:** For complex broadcasting scenarios or scenarios where messages need to be reliably delivered even if clients are temporarily offline, consider using a message queue like Redis or RabbitMQ. Clients can subscribe to specific channels, and the server can publish messages to these channels.
+
+*   **Asynchronous Operations:** Ensure all your operations (especially database interactions or external API calls) are performed asynchronously to avoid blocking the event loop.
+
+*   **Connection Limits:**  Implement connection limits and rate limiting to prevent abuse or resource exhaustion.
+
+*   **Load Balancing:** For very large-scale applications, distribute WebSocket connections across multiple servers using a load balancer. Sticky sessions (ensuring a client always connects to the same server) might be necessary, depending on your application's architecture.
+
+## Complete Example with HTML Changes
+
+To properly test the updated code you'll need to modify the HTML to accept a client ID. Here's an example of how to do that:
+
+```python
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+import asyncio
+
+app = FastAPI()
+
+html = """
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Chat</title>
+    </head>
+    <body>
+        <h1>WebSocket Chat</h1>
+        <label for="clientId">Enter Client ID:</label>
+        <input type="number" id="clientId" value="1" min="1">
+        <form action="" onsubmit="sendMessage(event)">
+            <input type="text" id="messageText" autocomplete="off"/>
+            <button>Send</button>
+        </form>
+        <ul id='messages'>
+        </ul>
+        <script>
+            let clientId = document.getElementById("clientId").value;
+            let ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+
+            document.getElementById("clientId").addEventListener("change", function() {
+                clientId = this.value;
+                ws.close();
+                ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+
+                ws.onmessage = function(event) {
+                    var messages = document.getElementById('messages')
+                    var message = document.createElement('li')
+                    var content = document.createTextNode(event.data)
+                    message.appendChild(content)
+                    messages.appendChild(message)
+                };
+            });
+
+
+            ws.onmessage = function(event) {
+                var messages = document.getElementById('messages')
+                var message = document.createElement('li')
+                var content = document.createTextNode(event.data)
+                message.appendChild(content)
+                messages.appendChild(message)
+            };
+            function sendMessage(event) {
+                var input = document.getElementById("messageText")
+                ws.send(input.value)
+                input.value = ''
+                event.preventDefault()
+            }
+        </script>
+    </body>
+</html>
+"""
+
+manager = {} # Using a dictionary to store websocket connections for each client.  Easily scales up with additional metadata.
+
+@app.get("/")
+async def get():
+    return HTMLResponse(html)
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: int):
+    await websocket.accept()
+    try:
+        manager[client_id] = websocket
+        while True:
+            data = await websocket.receive_text()
+            await broadcast(f"Client #{client_id} says: {data}", exclude=client_id) # Broadcast the message
+            await websocket.send_text(f"You said: {data}") #Echo it back to the sender.
+    except Exception as e:
+        print(f"Error in websocket: {e}")
+    finally:
+        del manager[client_id]
+        print(f"Client #{client_id} disconnected")
+
+
+
+async def broadcast(message: str, exclude: int = None):
+    """Broadcasts a message to all connected clients, optionally excluding a specific client."""
+    for client_id, connection in manager.items():
+        if client_id != exclude:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                print(f"Failed to send message to client {client_id}: {e}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+Key changes to the HTML:
+
+*   An input field `clientId` allows the user to specify their client ID.  It defaults to 1.
+*   JavaScript reads the value from `clientId` to construct the WebSocket URL correctly (`ws://localhost:8000/ws/${clientId}`).
+*   The JavaScript listens to the `change` event on the client ID input so when the value changes, it closes the previous websocket connection, and creates a new one using the new client ID.
+
+## Conclusion
+
+WebSocket broadcasting in FastAPI provides a powerful mechanism for building real-time interactive applications.  By understanding the core principles of managing client connections and utilizing asynchronous operations, you can create scalable and efficient WebSocket servers. Remember to consider the points about scalability as you move to production environments.  This guide provides a solid foundation for building complex and engaging real-time experiences with FastAPI and WebSockets.

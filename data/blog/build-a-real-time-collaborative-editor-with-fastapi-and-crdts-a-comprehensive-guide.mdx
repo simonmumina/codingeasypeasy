@@ -1,0 +1,543 @@
+---
+title: "Build a Real-Time Collaborative Editor with FastAPI and CRDTs: A Comprehensive Guide"
+date: '2024-01-01'
+lastmod: '2024-01-08'
+tags: ['fastapi', 'python', 'realtime', 'collaboration', 'crdt', 'google docs', 'editor', 'websocket', 'operational transformation']
+draft: false
+summary: "Learn how to build a real-time collaborative text editor similar to Google Docs using FastAPI for the backend and Conflict-Free Replicated Data Types (CRDTs) to manage concurrent edits. This comprehensive guide includes code examples and explanations."
+authors: ['default']
+---
+
+# Build a Real-Time Collaborative Editor with FastAPI and CRDTs: A Comprehensive Guide
+
+Have you ever wondered how Google Docs allows multiple users to edit the same document simultaneously without conflicts? The magic behind this is often a combination of technologies including server-side frameworks and clever data structures. In this tutorial, we'll explore how to build a basic real-time collaborative text editor using [FastAPI](https://fastapi.tiangolo.com/) for the backend and [Conflict-Free Replicated Data Types (CRDTs)](https://crdt.tech/) to handle concurrent edits gracefully.
+
+## What You'll Learn
+
+*   **FastAPI Setup:** Creating a basic FastAPI application with WebSocket support.
+*   **WebSocket Communication:** Implementing real-time communication between the server and clients.
+*   **CRDT Implementation:** Understanding and using a CRDT (specifically, a list-based CRDT) to manage document state.
+*   **Operation Broadcasting:** Broadcasting operations (insertions and deletions) to all connected clients.
+*   **Client-Side Considerations:** (Briefly) Discussing how to integrate the backend with a frontend editor.
+
+## Prerequisites
+
+*   Basic knowledge of Python.
+*   Familiarity with web development concepts (HTTP, WebSockets).
+*   An understanding of asynchronous programming (async/await in Python).
+*   Python 3.7+ installed.
+
+## Project Setup
+
+Let's start by setting up our project environment.
+
+1.  **Create a Project Directory:**
+
+    ```bash
+    mkdir fastapi-collaborative-editor
+    cd fastapi-collaborative-editor
+    ```
+
+2.  **Create a Virtual Environment (recommended):**
+
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate  # On Linux/macOS
+    # venv\Scripts\activate  # On Windows
+    ```
+
+3.  **Install Dependencies:**
+
+    ```bash
+    pip install fastapi uvicorn python-socketio
+    ```
+
+    *   `fastapi`: The web framework.
+    *   `uvicorn`: An ASGI server to run the FastAPI application.
+    *   `python-socketio`:  This library will allow for websocket communication. A more robust solution would be a library like `websockets`.
+
+## Backend (FastAPI) Implementation
+
+Now, let's create the backend using FastAPI.
+
+### 1. Create `main.py`
+
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+import json
+
+app = FastAPI()
+
+# CORS (Cross-Origin Resource Sharing) configuration for development
+origins = [
+    "http://localhost:3000",  # Replace with your frontend's URL
+    "http://localhost:8000",  # Allow access from other ports if needed
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+    "*", # Careful with wildcard in production
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Simple in-memory document state and connections
+document_state = ""
+connections: list[WebSocket] = []
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connections.append(websocket)
+
+    try:
+        await websocket.send_text(document_state) # Send initial state
+
+        while True:
+            data = await websocket.receive_text()
+            # Process the incoming message
+            # For now, simply append to the document state (for demonstration)
+            global document_state
+            document_state += data
+
+            # Broadcast the updated state to all connected clients
+            for connection in connections:
+                await connection.send_text(document_state)
+
+    except WebSocketDisconnect:
+        connections.remove(websocket)
+        print("Client disconnected")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+**Explanation:**
+
+*   **Imports:**  We import necessary modules from FastAPI and other libraries.
+*   **CORS Configuration:**  We enable CORS to allow our frontend (running on a different origin) to communicate with the backend.  **Important:**  Replace `http://localhost:3000` with your actual frontend URL. Avoid using `*` in production as it opens your server to requests from any origin.
+*   **`document_state`:**  A simple string variable to hold the document content. In a real application, you'd use a more sophisticated data structure or a database.
+*   **`connections`:** A list to track all active WebSocket connections.
+*   **`websocket_endpoint`:**
+    *   It accepts a WebSocket connection.
+    *   It sends the current `document_state` to the newly connected client.
+    *   It enters a loop to receive messages from the client.
+    *   It appends the received data to the `document_state`.
+    *   It broadcasts the updated `document_state` to all connected clients.
+    *   It handles `WebSocketDisconnect` to remove the client from the `connections` list.
+*   **`if __name__ == "__main__":`:**  This block starts the Uvicorn server when the script is run directly.
+
+### 2. Run the FastAPI Application
+
+```bash
+python main.py
+```
+
+This will start the server on `http://0.0.0.0:8000`.  You can now test the WebSocket endpoint using a WebSocket client.
+
+## Introducing CRDTs (Conflict-Free Replicated Data Types)
+
+The above example is extremely basic and will lead to issues if multiple clients try to modify the text at the same time. The problem comes from last-write-wins scenario. This is where CRDTs come in. CRDTs are data structures designed to handle concurrent updates without requiring coordination between replicas.  They guarantee eventual consistency, meaning that all replicas will converge to the same state even if updates are applied in different orders.
+
+For this example, we'll focus on a **list-based CRDT**, specifically an implementation that can handle insertions and deletions in a text document. There are many different CRDT algorithms and approaches.  This example will focus on a **Logoot** inspired implementation (though simplified for clarity).  Logoot CRDTs use unique identifiers for each character position to resolve conflicts during concurrent operations.
+
+### Implementing a Simplified CRDT
+
+We'll create a simplified CRDT structure with the following key concepts:
+
+*   **Positions:** Each character in the document is assigned a unique position (a list of integers).  Think of this as a hierarchical numbering system.
+*   **Operations:** Operations are represented as insertions or deletions at specific positions.
+*   **State:**  The CRDT's state is maintained as an ordered list of character-position pairs.
+
+Let's modify the `main.py` file.  We will add a `crdt.py` to store CRDT related functions and objects.
+
+#### 1. Create `crdt.py`
+
+```python
+import uuid
+from typing import List, Tuple, Optional
+
+class PositionIdentifier:
+  def __init__(self, digits: List[int]):
+    self.digits = digits
+
+  def __lt__(self, other: 'PositionIdentifier') -> bool:
+    """
+    Less than comparison for PositionIdentifiers.
+    Compares the identifiers lexicographically.
+    """
+    min_len = min(len(self.digits), len(other.digits))
+    for i in range(min_len):
+      if self.digits[i] < other.digits[i]:
+        return True
+      elif self.digits[i] > other.digits[i]:
+        return False
+    return len(self.digits) < len(other.digits)  # If all digits are equal, the shorter list is considered smaller
+
+
+  def __eq__(self, other: 'PositionIdentifier') -> bool:
+    """
+    Equality comparison for PositionIdentifiers.
+    Two identifiers are equal if their digit lists are identical.
+    """
+    return self.digits == other.digits
+
+  def __hash__(self):
+        return hash(tuple(self.digits))
+
+
+  def __repr__(self):
+    return f"PositionIdentifier({self.digits})"
+
+
+class CRDTText:
+    def __init__(self):
+        self.structure: List[Tuple[PositionIdentifier, str]] = [] # Sorted List of (Position, Char)
+        self.site_id = str(uuid.uuid4())
+
+    def generate_position_between(self, pos1: Optional[PositionIdentifier], pos2: Optional[PositionIdentifier]) -> PositionIdentifier:
+        """
+        Generates a new position identifier between two existing positions.
+
+        If pos1 is None (beginning of the list), the new position is smaller than pos2.
+        If pos2 is None (end of the list), the new position is larger than pos1.
+        If both are None, generates a default starting position [1].
+        """
+
+        if pos1 is None and pos2 is None:
+            return PositionIdentifier([1])  # Default starting position
+
+        if pos1 is None:
+            pos1 = PositionIdentifier([])  # Treat as empty for comparison
+
+        if pos2 is None:
+            #  Generate a position slightly greater than pos1
+            new_digits = list(pos1.digits)
+            new_digits.append(1)  # Add a '1' to the end
+            return PositionIdentifier(new_digits)
+
+        # Find the common prefix length
+        i = 0
+        while i < len(pos1.digits) and i < len(pos2.digits) and pos1.digits[i] == pos2.digits[i]:
+            i += 1
+
+        # If pos1 and pos2 are identical, add to the end of pos1
+        if i == len(pos1.digits) and i == len(pos2.digits):
+          new_digits = list(pos1.digits)
+          new_digits.append(1) #Arbitrary Value, may need to be smarter for dense cases.
+          return PositionIdentifier(new_digits)
+
+        # Generate a digit between pos1[i] and pos2[i]
+        if i < len(pos1.digits) and i < len(pos2.digits):
+            gap = pos2.digits[i] - pos1.digits[i]
+            if gap > 1:
+                # Simple case: just take the average
+                new_digit = pos1.digits[i] + 1
+                return PositionIdentifier(pos1.digits[:i] + [new_digit])
+            else:
+                # Handle the case where we need to extend the prefix
+                new_digits = list(pos1.digits[:i+1])  # copy the common prefix + pos1[i]
+
+                # Add more digits until we can find a gap.  May need smarter approach to avoid overflow.
+                j = i + 1
+                while True:
+                  digit1 = pos1.digits[j] if j < len(pos1.digits) else 0
+                  digit2 = pos2.digits[j] if j < len(pos2.digits) else 0
+
+                  gap = digit2 - digit1
+                  if gap > 0:
+                      new_digit = digit1 + 1
+                      new_digits.append(new_digit)
+                      return PositionIdentifier(new_digits)
+                  else:
+                      #No gap, need to continue extending
+                      new_digits.append(digit1)
+                      j+=1
+
+
+        #If prefix of Pos1 is shorter
+        if i < len(pos1.digits):
+          new_digits = list(pos1.digits)
+          new_digits.append(1)
+          return PositionIdentifier(new_digits)
+
+        #If prefix of Pos2 is shorter
+        if i < len(pos2.digits):
+          # Edge case, should not happen given checks above
+          print("Unexpected case in generate_position_between.")
+          return PositionIdentifier(list(pos2.digits))
+
+        raise Exception("Should not hit here")
+
+
+    def insert_char(self, char: str, position: PositionIdentifier):
+        """
+        Inserts a character at the given position.
+        Maintains the sorted order of the structure.
+        """
+        index = 0
+        while index < len(self.structure) and self.structure[index][0] < position:
+            index += 1
+        self.structure.insert(index, (position, char))
+
+
+    def delete_char(self, position: PositionIdentifier):
+      """
+      Deletes a character at the given position, if it exists.
+      """
+      for i, (pos, _) in enumerate(self.structure):
+          if pos == position:
+              del self.structure[i]
+              return  # Exit after deleting the first match
+
+
+    def to_string(self) -> str:
+        """
+        Converts the CRDT structure to a string.
+        """
+        return "".join(char for _, char in sorted(self.structure, key=lambda x: x[0]))
+
+    def apply_remote_operation(self, operation):
+      """Applies a remote operation received from another client."""
+      op_type = operation.get("type")
+
+      if op_type == "insert":
+          char = operation["char"]
+          position_data = operation["position"]
+          position = PositionIdentifier(position_data)
+          self.insert_char(char, position)
+      elif op_type == "delete":
+          position_data = operation["position"]
+          position = PositionIdentifier(position_data)
+          self.delete_char(position)
+      else:
+          print(f"Unknown operation type: {op_type}")
+```
+
+**Explanation:**
+
+*   **`PositionIdentifier`**: Represents the position of a character in the CRDT. It allows for hierarchical positioning which handles concurrent inserts.
+*   **`CRDTText`**:
+    *   `structure`:  A list of tuples, where each tuple contains a `PositionIdentifier` and the character at that position. The list is *always sorted* by `PositionIdentifier`.
+    *   `generate_position_between(pos1, pos2)`:  Generates a new unique `PositionIdentifier` between two existing positions. This is the core of conflict resolution. If `pos1` and `pos2` are the same, a new position is created after the first.
+    *   `insert_char(char, position)`: Inserts a character at the given position, maintaining the sorted order of the `structure`.
+    *   `delete_char(position)`: Deletes the character at the given position.
+    *   `to_string()`:  Reconstructs the text document from the CRDT's state.
+    *   `apply_remote_operation`: Applies a remote operation (insert or delete) received from another client.
+
+#### 2. Modify `main.py` to use the CRDT
+
+```python
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+import json
+from crdt import CRDTText, PositionIdentifier
+
+app = FastAPI()
+
+# CORS (Cross-Origin Resource Sharing) configuration for development
+origins = [
+    "http://localhost:3000",  # Replace with your frontend's URL
+    "http://localhost:8000",  # Allow access from other ports if needed
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+    "*", # Careful with wildcard in production
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize CRDT
+crdt = CRDTText()
+connections: list[WebSocket] = []
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connections.append(websocket)
+
+    try:
+        await websocket.send_text(crdt.to_string())  # Send initial state
+
+        while True:
+            data = await websocket.receive_text()
+            try:
+                operation = json.loads(data) #Parse as json
+                crdt.apply_remote_operation(operation)
+
+                # Broadcast the updated state to all connected clients
+                text = crdt.to_string() #Rebuild the full text
+                for connection in connections:
+                    await connection.send_text(text)
+
+            except json.JSONDecodeError:
+              print(f"Received invalid JSON: {data}")
+            except Exception as e:
+              print(f"Error processing message: {e}")
+
+
+    except WebSocketDisconnect:
+        connections.remove(websocket)
+        print("Client disconnected")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+**Key Changes:**
+
+*   Imported `CRDTText` and `PositionIdentifier` from `crdt.py`.
+*   Initialized a `CRDTText` instance called `crdt`.
+*   The `websocket_endpoint` now:
+    *   Sends the initial state of the CRDT (converted to a string using `crdt.to_string()`).
+    *   Receives operation messages in JSON format.
+    *   Applies the operations to the CRDT using `crdt.apply_remote_operation()`.
+    *   Broadcasts the updated string representation of the CRDT to all clients.
+    *   Added error handling for invalid JSON and other exceptions.
+
+## Client-Side (JavaScript) Implementation (Conceptual)
+
+The frontend will need to:
+
+1.  **Connect to the WebSocket:** Establish a connection to `ws://localhost:8000/ws`.
+2.  **Receive Document State:**  When a new connection is established or the document is updated, the server will send the entire document as a string.  The frontend should replace its existing content with this new version.
+3.  **Track Editor Changes:**  Listen for changes in the editor (e.g., using `input` event).
+4.  **Generate and Send Operations:** When a change occurs, create a CRDT operation object (insert or delete) and send it to the server as a JSON string.
+5.  **Apply Remote Operations:** (This part is handled by the backend in our current setup, but in a more sophisticated setup, the frontend might also be responsible for applying operations).
+
+Here's a very basic conceptual example of how the client might send an insert operation (using plain JavaScript):
+
+```javascript
+// Example operation format (consistent with crdt.py)
+function insertOperation(char, position) {
+  return {
+    type: "insert",
+    char: char,
+    position: position,
+  };
+}
+
+// Example of sending an insert operation
+function handleInsert(char, index) {
+  // Generate position (need logic to do this correctly, more complex)
+  // This part would need significant improvement
+  const position = [index];
+  const operation = insertOperation(char, position);
+  socket.send(JSON.stringify(operation));
+}
+```
+
+**Important Considerations for the Client:**
+
+*   **Efficient DOM Updates:**  Directly replacing the entire editor content on every update is inefficient.  Use techniques like virtual DOM or diffing algorithms to update only the parts of the editor that have changed.
+*   **Position Generation Logic:**  The client needs to be able to generate valid `PositionIdentifier` values that are compatible with the server's CRDT implementation.  This is one of the most complex parts of building a CRDT-based editor.
+*   **Cursor Management:**  Handle the positioning of the cursor correctly when remote changes occur.
+
+## Running the Application
+
+1.  **Start the FastAPI Server:**  Run `python main.py`.
+2.  **Create a basic HTML/JavaScript page (index.html):**
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Collaborative Editor</title>
+</head>
+<body>
+  <h1>Collaborative Editor</h1>
+  <textarea id="editor" style="width: 80%; height: 300px;"></textarea>
+  <script>
+    const editor = document.getElementById("editor");
+    const socket = new WebSocket("ws://localhost:8000/ws");
+
+    socket.onopen = () => {
+      console.log("WebSocket connected");
+    };
+
+    socket.onmessage = (event) => {
+      editor.value = event.data;
+    };
+
+    socket.onclose = () => {
+      console.log("WebSocket closed");
+    };
+
+    editor.addEventListener("input", () => {
+        // Extremely basic operation creation.
+        // Does not create positions properly! Only for basic demo
+        const newText = editor.value;
+
+        if(newText.length > socket.lastLength){
+            const char = newText[newText.length - 1];
+            const index = newText.length - 1;
+
+            const operation = { type: "insert", char: char, position: [index] };
+            socket.send(JSON.stringify(operation));
+        }
+        else{
+          //Handle delete for demo.  Needs proper position handling.
+          const operation = { type: "delete", position: [newText.length]}; //Assumes delete from end.
+          socket.send(JSON.stringify(operation));
+
+        }
+
+
+      socket.lastLength = editor.value.length;
+
+    });
+
+    socket.lastLength = 0;
+
+  </script>
+</body>
+</html>
+```
+
+3.  **Open `index.html` in two different browser windows.**
+
+You should now be able to type in one browser window and see the changes reflected in the other, demonstrating basic real-time collaboration.
+
+## Limitations and Next Steps
+
+This is a simplified example and has several limitations:
+
+*   **Basic CRDT Implementation:** The `generate_position_between` function is rudimentary and may not handle complex scenarios with many concurrent insertions. Consider more robust CRDT algorithms like Logoot or Treedoc.  The positioning strategy is very basic and only works for simple appends or deletions to the end of the string.
+*   **No Undo/Redo:** Implementing undo/redo requires storing operation history.
+*   **No Rich Text Support:**  Only supports plain text.  Supporting rich text formatting would require extending the CRDT to handle formatting attributes.
+*   **Error Handling:** The error handling in the server and client is basic.
+*   **Lack of Authentication:** No user authentication or authorization.
+*   **Naive Frontend Updates:** The frontend updates the entire editor content on every change. This is inefficient.
+*   **Simple Operation Broadcasting:** Broadcasting the entire document on every change is not scalable. Consider broadcasting only the operations.
+
+**Further Exploration:**
+
+*   **Logoot/Treedoc:** Research and implement more advanced CRDT algorithms like Logoot or Treedoc.
+*   **Operational Transformation (OT):**  Explore OT as an alternative to CRDTs.
+*   **Differential Synchronization:** Use differential synchronization techniques to reduce the amount of data transferred between the server and clients.
+*   **Yjs:**  Consider using existing CRDT libraries like [Yjs](https://www.npmjs.com/package/yjs) (a popular JavaScript library for collaborative editing).
+*   **Integrate with a Rich Text Editor:** Integrate the backend with a rich text editor like Quill, Draft.js, or ProseMirror.
+*   **Implement Undo/Redo:** Store operation history to allow users to undo and redo changes.
+*   **Database Integration:** Store the document state in a database for persistence.
+
+## Conclusion
+
+This tutorial provided a foundation for building a real-time collaborative text editor with FastAPI and CRDTs. While the example is simplified, it demonstrates the core concepts involved in handling concurrent edits and achieving eventual consistency. By exploring more advanced CRDT algorithms, optimizing the frontend, and adding features like undo/redo and rich text support, you can build a powerful collaborative editing application.  Building collaborative applications can be a rewarding experience! Good luck!

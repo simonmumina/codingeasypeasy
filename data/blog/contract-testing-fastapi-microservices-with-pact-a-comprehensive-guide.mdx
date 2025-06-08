@@ -1,0 +1,423 @@
+---
+title: 'Contract Testing FastAPI Microservices with Pact: A Comprehensive Guide'
+date: '2024-02-29'
+lastmod: '2024-02-29'
+tags: ['fastapi', 'microservices', 'contract testing', 'pact', 'testing', 'python']
+draft: false
+summary: 'Learn how to implement contract testing for your FastAPI microservices using Pact. Ensure seamless communication and prevent integration issues with this comprehensive guide and practical code examples.'
+authors: ['default']
+---
+
+# Contract Testing FastAPI Microservices with Pact: A Comprehensive Guide
+
+In the world of microservices, ensuring seamless communication between different services is crucial. Without proper testing, integration issues can quickly become a nightmare, leading to broken features and frustrated users.  This is where **contract testing** comes in.  This guide will walk you through the process of implementing contract testing for your FastAPI microservices using **Pact**, a powerful contract testing framework.
+
+## What is Contract Testing?
+
+Contract testing verifies that two independently deployable services, the **Consumer** and the **Provider**, agree on the structure and content of their interactions. Instead of testing the entire integration flow in an end-to-end fashion, contract testing focuses on the specific API requests and responses that are exchanged between services.
+
+**Why Contract Testing?**
+
+*   **Early Detection of Integration Issues:**  Find compatibility problems before deploying to production.
+*   **Faster Feedback Loops:** Tests are more targeted and faster than end-to-end tests.
+*   **Increased Confidence in Deployments:**  Ensure that changes in one service won't break another.
+*   **Reduced Testing Complexity:** Focus on the core API interactions, simplifying the testing process.
+*   **Independent Deployments:**  Teams can deploy services independently, knowing that contracts are validated.
+
+## Introducing Pact
+
+Pact is a contract testing framework that allows you to define expectations about API interactions in a consumer-driven way.
+
+*   **Consumer-Driven Contracts:** The Consumer defines the contract, specifying the requests it will make and the responses it expects.
+*   **Broker:**  Pact provides a broker to store and manage contracts, making them accessible to both the Consumer and the Provider.
+*   **Verification:** The Provider can then verify that it meets the expectations defined in the contract.
+
+## Setting up Your Environment
+
+Before we dive into the code, let's set up our development environment. You'll need:
+
+*   **Python 3.7+**
+*   **Poetry (optional but recommended for dependency management)**
+*   **FastAPI**
+*   **Pact-Python (the Pact framework for Python)**
+*   **pytest (for running tests)**
+
+Here's how you can install the necessary packages using Poetry:
+
+```bash
+poetry init -n
+poetry add fastapi uvicorn python-multipart # FastAPI and dependencies
+poetry add pact-python pytest pytest-asyncio requests # Pact testing and dependencies
+```
+
+If you're not using Poetry, you can use `pip`:
+
+```bash
+pip install fastapi uvicorn python-multipart
+pip install pact-python pytest pytest-asyncio requests
+```
+
+## Our Example Microservices
+
+For this guide, we'll use a simplified example with two microservices:
+
+*   **Product Service (Provider):**  Provides information about products.
+*   **Order Service (Consumer):**  Retrieves product information from the Product Service to create orders.
+
+### Product Service (Provider - FastAPI)
+
+Let's start with the Product Service, which will act as the Provider. Create a file named `product_service.py`:
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class Product(BaseModel):
+    id: int
+    name: str
+    price: float
+
+products = {
+    1: Product(id=1, name="Awesome Gadget", price=99.99),
+    2: Product(id=2, name="Super Widget", price=49.99),
+}
+
+@app.get("/products/{product_id}", response_model=Product)
+async def get_product(product_id: int):
+    if product_id not in products:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return products[product_id]
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
+```
+
+This FastAPI application defines a single endpoint, `/products/{product_id}`, which returns a product based on its ID.
+
+### Order Service (Consumer - FastAPI)
+
+Now, let's create the Order Service, which will act as the Consumer. Create a file named `order_service.py`:
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import httpx
+
+app = FastAPI()
+
+class Order(BaseModel):
+    product_id: int
+    quantity: int
+
+class OrderResponse(BaseModel):
+    order_id: int
+    product_name: str
+    total_price: float
+
+async def get_product_details(product_id: int):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"http://localhost:8001/products/{product_id}") # Replace with your Product Service URL
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail="Failed to retrieve product details")
+        return response.json()
+
+@app.post("/orders/", response_model=OrderResponse)
+async def create_order(order: Order):
+    try:
+        product = await get_product_details(order.product_id)
+        total_price = product['price'] * order.quantity
+        # Simulate creating an order in a database
+        order_id = 123  # Replace with actual order ID generation
+        return OrderResponse(order_id=order_id, product_name=product['name'], total_price=total_price)
+    except HTTPException as e:
+        raise e # Re-raise the exception
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create order: {e}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port="8002")
+```
+
+This FastAPI application has a single endpoint, `/orders/`, which creates an order.  It calls the Product Service to get the product details.
+
+## Writing the Consumer Contract Test
+
+Now comes the core part: defining the contract. Create a file named `test_order_service.py` to house your consumer contract tests:
+
+```python
+import pytest
+from pact import Consumer, Provider
+import asyncio
+import httpx
+import json
+
+pact = Consumer('OrderService').has_pact_with(Provider('ProductService'))
+port = 1234  # Choose a free port
+
+# Pact fixture
+@pytest.fixture(scope="module")
+def event_loop():
+    """Create an instance of the default event loop for each test case."""
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.set_debug(True)
+    yield loop
+    loop.close()
+
+@pytest.fixture(scope="module")
+def mock_product_service():
+    (pact
+     .given('Product with ID 1 exists')
+     .upon_receiving('a request for product with ID 1')
+     .with_request('get', '/products/1')
+     .will_respond_with(200, body={
+        'id': 1,
+        'name': 'Awesome Gadget',
+        'price': 99.99
+     }))
+
+    with pact:
+        yield pact
+
+# Asynchronous test client fixture
+@pytest.fixture(scope="module")
+async def client():
+    async with httpx.AsyncClient(base_url="http://localhost:8002") as client: # Order Service URL
+        yield client
+
+# Test function
+@pytest.mark.asyncio
+async def test_create_order(mock_product_service, client):
+    mock_product_service.start_service()
+    mock_product_service.verify() # Added verify() to ensure the interaction is verified
+
+    product_service_port = mock_product_service.port  # Get the dynamically allocated port
+    order_data = {'product_id': 1, 'quantity': 2}
+    response = await client.post("/orders/", json=order_data)
+
+    assert response.status_code == 200
+    response_json = response.json()
+    assert response_json['order_id'] == 123 # This would need to be made dynamic if order_id generation changes.
+    assert response_json['product_name'] == 'Awesome Gadget'
+    assert response_json['total_price'] == 199.98
+    mock_product_service.stop_service()
+```
+
+**Explanation:**
+
+1.  **Import necessary libraries:** `pytest`, `pact`, `asyncio`, `httpx` and `json`.
+2.  **Define the Consumer and Provider:**  `pact = Consumer('OrderService').has_pact_with(Provider('ProductService'))`
+3.  **`event_loop` fixture:**  A crucial fixture for asynchronous pytest tests. This handles the event loop for the async test functions.  Scope it to `module` for efficiency.
+4.  **`mock_product_service` fixture:**  This is where the contract is defined.
+    *   `given('Product with ID 1 exists')`: Sets up a state for the Provider. This is optional but helpful for more complex scenarios.
+    *   `upon_receiving('a request for product with ID 1')`:  Describes the request that the Consumer will make.
+    *   `with_request('get', '/products/1')`:  Specifies the HTTP method and path of the request.
+    *   `will_respond_with(200, body={...})`:  Defines the expected response from the Provider, including the status code and body.
+    *   `with pact: yield pact`:  This context manager starts the mock service and makes it available for testing.
+5.  **`client` fixture:**  Sets up an `httpx` asynchronous client for making requests to the Order Service.
+6.  **`test_create_order` function:** This is the actual test.
+    *   `mock_product_service.start_service()`:  Starts the mock Product Service.
+    *   `mock_product_service.verify()`: **VERY IMPORTANT!** This line asserts that the interaction defined in the pact is matched during the test execution. Without this the test will always pass even when the pact is not matched.
+    *   Makes a request to the `/orders/` endpoint of the Order Service.
+    *   Asserts that the response is as expected.
+    *   `mock_product_service.stop_service()`:  Stops the mock Product Service.
+
+**Important Notes:**
+
+*   The port used for the Pact mock service is dynamically allocated by default. You can specify a port if needed.  I've allowed dynamic allocation and access it using `mock_product_service.port`.
+*   Replace `http://localhost:8002` in the `client` fixture with the actual URL of your Order Service.
+*   Ensure the `OrderService` is running *before* running this test or else the test will fail because the client cannot connect.
+*   The `httpx.AsyncClient` uses `async with` to ensure the client is properly closed after use.
+*   The `mock_product_service.verify()` function is *essential* to verify the contract.  Without it, the test might pass even if the contract is not met.
+*   Use the given statement to define provider states - these provider states must be setup and verified when the provider runs its verification.
+
+## Running the Consumer Test
+
+Run the test using pytest:
+
+```bash
+pytest test_order_service.py
+```
+
+This will execute the consumer test, which will:
+
+1.  Start the mock Product Service.
+2.  Make a request to the Order Service.
+3.  Verify that the Order Service makes a request to the Product Service that matches the contract.
+4.  Generate a Pact file containing the contract definition.
+
+The Pact file (usually named something like `OrderService-ProductService.json`) will be stored in a `pacts` directory.
+
+## Publishing the Contract to a Broker
+
+Now, you need to publish the generated contract to a Pact Broker. A Pact Broker is a central repository for storing and managing Pact contracts.  It allows the Provider to verify that it meets the Consumer's expectations.
+
+There are several Pact Broker options available, including a free hosted broker. For the sake of this example, we'll assume you have a Pact Broker running at `http://localhost:9292`.
+
+Install the `pact-python` broker dependency:
+
+```bash
+pip install pact-python[broker]
+# OR if you are using poetry
+poetry add pact-python -E broker
+```
+
+Then add the following code to your consumer test file, within the `test_create_order` function:
+
+```python
+# ... existing code ...
+
+    try:
+        product_service_port = mock_product_service.port  # Get the dynamically allocated port
+        order_data = {'product_id': 1, 'quantity': 2}
+        response = await client.post("/orders/", json=order_data)
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json['order_id'] == 123 # This would need to be made dynamic if order_id generation changes.
+        assert response_json['product_name'] == 'Awesome Gadget'
+        assert response_json['total_price'] == 199.98
+    finally: # Ensure the Pact file is published even if the test fails.
+        mock_product_service.stop_service()
+
+    # Publish the pact
+    mock_product_service.publish_pact(
+        pact_uri='./pacts/orderservice-productservice.json',  # path to the pact file
+        broker_base_url='http://localhost:9292',
+        consumer_version='1.0.0'  # set the version of the consumer
+    )
+```
+
+**Important Notes:**
+
+*   Ensure the `publish_pact` call happens *after* the mock service is stopped.
+*   Use a `finally` block to ensure the service is stopped and the pact is published even if an assertion fails.
+*   The `pact_uri` should point to the location of your generated pact file.  If it's in the default location, this will be `pacts/orderservice-productservice.json` (or similar depending on your naming conventions).
+*   The `broker_base_url` should point to your Pact Broker URL.
+*   The `consumer_version` is crucial for tracking versions and releases.  This should match your consumer application's version.
+
+Rerun your test and you should now see the contract published to your Pact Broker!
+
+## Verifying the Contract on the Provider Side
+
+Now, the Product Service (Provider) needs to verify that it meets the contract defined by the Order Service (Consumer).  Create a file named `test_product_service.py`:
+
+```python
+import pytest
+from pact import Verifier
+import uvicorn
+import asyncio
+from product_service import app  # Import your FastAPI app
+from multiprocessing import Process
+
+PACT_BROKER_URL = 'http://localhost:9292'
+PROVIDER_VERSION = '1.0.0'  # Set the provider version
+PRODUCT_SERVICE_PORT = 8001  # Port the Product Service runs on
+
+# Fixture to start and stop the FastAPI app in a separate process
+@pytest.fixture(scope="module")
+def product_service():
+    def run_app():
+        uvicorn.run(app, host="0.0.0.0", port=PRODUCT_SERVICE_PORT, log_level="info")
+
+    process = Process(target=run_app)
+    process.start()
+    yield process  # Provide the process to the test
+    process.terminate()
+    process.join()
+
+
+def test_product_service_provider(product_service):
+    verifier = Verifier(
+        provider='ProductService',
+        provider_base_url=f'http://localhost:{PRODUCT_SERVICE_PORT}'  # Use the actual port
+    )
+
+    result = verifier.verify_with_pact_broker(
+        broker_base_url=PACT_BROKER_URL,
+        provider_version=PROVIDER_VERSION,
+        verbose=True,  # See pact output
+    )
+
+    assert result[0], "Pact verification failed: check the output for details" # Asserts that all contracts are valid
+
+    # Add provider state handlers for each 'given' statement in your consumer tests
+    verifier.provider_state('Product with ID 1 exists', lambda: None) # Lambda function - define a function to change the provider state
+```
+
+**Explanation:**
+
+1.  **Import necessary libraries:** `pytest`, `Verifier`, `uvicorn`, `asyncio` and `Process` from `multiprocessing`.
+2.  **Define constants:**  `PACT_BROKER_URL`, `PROVIDER_VERSION`, `PRODUCT_SERVICE_PORT`.  These are important for configuration.
+3.  **`product_service` fixture:**
+    *   This fixture uses `multiprocessing` to run the FastAPI app in a separate process.  This is *crucial* because the `Verifier` needs to make HTTP requests to the running Provider.
+    *   The `run_app` function starts the FastAPI application using `uvicorn`.
+    *   The fixture yields the process, allowing the test to interact with it.
+    *   After the test, the process is terminated and joined. This is vital to clean up resources and prevent conflicts.
+4.  **`test_product_service_provider` function:**
+    *   Creates a `Verifier` instance, specifying the Provider name and base URL.
+    *   Calls `verifier.verify_with_pact_broker()` to fetch and verify contracts from the Pact Broker.
+        *   `broker_base_url`: The URL of your Pact Broker.
+        *   `provider_version`: The version of the Provider.
+        *   `verbose=True`:  Enable verbose output to see the verification process.
+    *   Asserts that the verification was successful.  The `result[0]` contains the overall verification status.
+    *   **Provider States:**  The `verifier.provider_state()` calls are *critical*.  For *every* `given` statement in your consumer tests, you *must* define a corresponding provider state handler here.  The handler is a function that sets up the provider to be in the correct state for the interaction.  In this simple example, we just use a `lambda: None` function, because the state is simple and doesn't require any special setup.  For more complex cases (e.g., setting up data in a database), you'll need to write more elaborate provider state handlers.
+
+**Running the Provider Verification**
+
+Make sure the Pact Broker and Product Service are *not* running manually. The `test_product_service` fixture is designed to start the Product Service during the test. Then run:
+
+```bash
+pytest test_product_service.py
+```
+
+The verifier will fetch the contract from the Pact Broker and verify that the Product Service satisfies the contract.  The output will show whether the verification was successful.
+
+**Provider States: A Deeper Dive**
+
+Provider states are essential for handling more complex scenarios.  For example, if the Order Service expects a different response from the Product Service based on whether the product is in stock, you'd define a provider state in the consumer test:
+
+```python
+(pact
+ .given('Product with ID 1 is out of stock')
+ .upon_receiving('a request for product with ID 1')
+ .with_request('get', '/products/1')
+ .will_respond_with(404, body={'error': 'Product out of stock'}))
+```
+
+Then, in the provider test, you'd define a corresponding provider state handler:
+
+```python
+def setup_product_out_of_stock():
+  #  Code to set the product with ID 1 out of stock in the Product Service's database or data store
+  print("Setting product ID 1 out of stock")
+  global products
+  if 1 in products:
+      del products[1]
+
+
+verifier.provider_state('Product with ID 1 is out of stock', setup_product_out_of_stock)
+
+```
+
+The Pact framework will call the `setup_product_out_of_stock()` function before verifying the interaction that depends on that state.
+
+## Best Practices for Contract Testing with Pact and FastAPI
+
+*   **Consumer-Driven Contracts:** Always start with the Consumer defining the contract.
+*   **Use a Pact Broker:**  A Pact Broker is essential for managing and sharing contracts.
+*   **Automate Contract Verification:**  Integrate provider verification into your CI/CD pipeline.
+*   **Provider States:**  Use provider states to handle complex scenarios and ensure that the provider is in the correct state for each interaction.
+*   **Meaningful Contract Descriptions:** Write clear and descriptive descriptions of the interactions in your contracts.
+*   **Version Control:**  Use version control for your Pact files.
+*   **Keep Contracts Focused:** Each contract should focus on a single API interaction.
+*   **Regularly Update Contracts:**  Update contracts as your APIs evolve.
+
+## Conclusion
+
+Contract testing with Pact is a valuable technique for ensuring the reliability of your FastAPI microservices. By defining contracts between consumers and providers, you can catch integration issues early and increase confidence in your deployments.  This guide provides a comprehensive overview of how to implement contract testing using Pact and FastAPI, including practical code examples and best practices. By adopting contract testing, you can build more robust and resilient microservice architectures.

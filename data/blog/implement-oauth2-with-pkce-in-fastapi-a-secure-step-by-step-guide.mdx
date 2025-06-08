@@ -1,0 +1,232 @@
+---
+title: 'Implement OAuth2 with PKCE in FastAPI: A Secure Step-by-Step Guide'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags: ['fastapi', 'oauth2', 'pkce', 'security', 'python', 'authentication', 'api']
+draft: false
+summary: 'Learn how to implement OAuth2 with PKCE (Proof Key for Code Exchange) in FastAPI to secure your APIs and protect user data. This comprehensive guide provides step-by-step instructions and code examples for building a robust authentication flow.'
+authors: ['default']
+---
+
+# Implement OAuth2 with PKCE in FastAPI: A Secure Step-by-Step Guide
+
+OAuth2 is a widely used authorization framework that allows applications to access resources on behalf of a user without sharing their credentials.  While OAuth2 offers various grant types, the *Authorization Code Grant* is a popular choice for web applications.  However, in scenarios involving public clients (like single-page applications or mobile apps), the standard Authorization Code Grant is vulnerable to certain attacks. That's where **PKCE (Proof Key for Code Exchange)** comes to the rescue.
+
+This blog post will guide you through implementing OAuth2 with PKCE in a FastAPI application.  We'll cover everything from setting up your FastAPI project to generating the necessary keys and handling the authorization flow.
+
+## Why Use PKCE?
+
+PKCE enhances the security of the Authorization Code Grant by adding a cryptographic check. Here's why it's essential for modern web applications:
+
+*   **Protects Against Authorization Code Interception:** PKCE prevents malicious actors from intercepting the authorization code and using it to obtain an access token.
+*   **Suitable for Public Clients:** It's specifically designed for public clients (applications running in a browser or on a mobile device) where the client secret cannot be securely stored.
+*   **Improved Security:** By adding a code verifier and code challenge, PKCE ensures that only the application that initiated the authorization request can redeem the authorization code for an access token.
+
+## Prerequisites
+
+Before we start, make sure you have the following installed:
+
+*   **Python:**  Version 3.7 or higher
+*   **FastAPI:** `pip install fastapi`
+*   **Uvicorn:** `pip install uvicorn` (ASGI server for running FastAPI)
+*   **Python-jose:** `pip install python-jose` (For JWT encoding/decoding - helpful for token management)
+*   **Requests:** `pip install requests` (For making HTTP requests to the authorization server)
+*   **python-multipart:** `pip install python-multipart` (Required for form data handling in FastAPI)
+
+## Step 1: Project Setup
+
+Create a new directory for your project and initialize a virtual environment:
+
+```bash
+mkdir fastapi-oauth2-pkce
+cd fastapi-oauth2-pkce
+python3 -m venv venv
+source venv/bin/activate  # On Linux/macOS
+# venv\Scripts\activate  # On Windows
+```
+
+## Step 2: FastAPI Application Structure
+
+Let's create a basic FastAPI application structure.  Create a file named `main.py`:
+
+```python
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.security import OAuth2AuthorizationCodeBearer
+from urllib.parse import quote
+import secrets
+import hashlib
+import base64
+import requests
+import json
+
+app = FastAPI()
+
+# Configuration (Replace with your actual values)
+AUTHORIZATION_SERVER_URL = "YOUR_AUTHORIZATION_SERVER_URL" # e.g., "https://example.com/oauth2/authorize"
+TOKEN_ENDPOINT = "YOUR_TOKEN_ENDPOINT" # e.g., "https://example.com/oauth2/token"
+CLIENT_ID = "YOUR_CLIENT_ID"
+CLIENT_SECRET = "YOUR_CLIENT_SECRET" # While technically not needed for PKCE, some servers require a dummy secret.
+REDIRECT_URI = "http://localhost:8000/callback"
+SCOPE = "read write"  #  Define the scopes your application needs
+
+oauth2_scheme = OAuth2AuthorizationCodeBearer(
+    authorizationUrl=AUTHORIZATION_SERVER_URL,
+    tokenUrl=TOKEN_ENDPOINT,
+)
+
+# In-memory storage for code verifiers (NOT FOR PRODUCTION! Use a database)
+code_verifier_storage = {}
+
+# Utility function to generate a random string
+def generate_random_string(length):
+    return secrets.token_urlsafe(length)
+
+# Utility function to generate the code challenge
+def generate_code_challenge(code_verifier):
+    code_challenge = hashlib.sha256(code_verifier.encode('ascii')).digest()
+    code_challenge = base64.urlsafe_b64encode(code_challenge).decode('ascii').rstrip('=')
+    return code_challenge
+
+# Route to initiate the OAuth2 flow
+@app.get("/authorize")
+async def authorize():
+    # Generate a code verifier
+    code_verifier = generate_random_string(48)
+
+    # Generate the code challenge
+    code_challenge = generate_code_challenge(code_verifier)
+
+    # Store the code verifier (INSECURE - use a database in production!)
+    state = generate_random_string(32)  #  Add state parameter for CSRF protection
+    code_verifier_storage[state] = code_verifier
+
+    # Construct the authorization URL
+    authorization_url = (
+        f"{AUTHORIZATION_SERVER_URL}?response_type=code"
+        f"&client_id={CLIENT_ID}"
+        f"&redirect_uri={quote(REDIRECT_URI)}"
+        f"&scope={quote(SCOPE)}"
+        f"&code_challenge={code_challenge}"
+        f"&code_challenge_method=S256"
+        f"&state={state}" # Include the state parameter
+    )
+
+    # Redirect the user to the authorization server
+    return RedirectResponse(authorization_url)
+
+
+# Callback endpoint to handle the authorization code
+@app.get("/callback")
+async def callback(code: str, state: str, request: Request):
+    # Retrieve the code verifier from storage
+    code_verifier = code_verifier_storage.get(state)
+
+    if not code_verifier:
+        raise HTTPException(status_code=400, detail="Invalid state or code verifier not found.")
+
+    # Remove the code verifier from storage (important for security)
+    del code_verifier_storage[state]
+
+    # Exchange the authorization code for an access token
+    token_url = TOKEN_ENDPOINT
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+        "client_id": CLIENT_ID,
+        "code_verifier": code_verifier,
+        "client_secret": CLIENT_SECRET # Some auth servers still expect a client secret.
+    }
+
+    response = requests.post(token_url, headers=headers, data=data)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    token_data = response.json()
+    access_token = token_data.get("access_token")
+    token_type = token_data.get("token_type")
+
+    if not access_token:
+        raise HTTPException(status_code=500, detail="Access token not found in response")
+
+    # Store and use the access token (Securely!) - in session, database, etc.
+    # For demonstration purposes, we'll just return it in the response.
+    return JSONResponse({"access_token": access_token, "token_type": token_type})
+
+
+# Example protected route (replace with your actual API endpoint)
+@app.get("/protected")
+async def protected(token: str = Depends(oauth2_scheme)):
+    # Use the access token to access protected resources
+    return {"message": "This is a protected resource!", "token": token}
+```
+
+**Explanation:**
+
+*   **Import necessary modules:** We import FastAPI, dependencies, HTTP exceptions, request handling, security (OAuth2), URL parsing, secrets (for random string generation), hashing, base64 encoding, and requests.
+*   **Configuration:**  Replace the placeholder values for `AUTHORIZATION_SERVER_URL`, `TOKEN_ENDPOINT`, `CLIENT_ID`, `CLIENT_SECRET`, `REDIRECT_URI`, and `SCOPE` with the actual values from your authorization server.  The `CLIENT_SECRET` may not be strictly required for PKCE, but many authorization servers still expect it, so provide a dummy secret.
+*   **OAuth2 Scheme:** We define an `OAuth2AuthorizationCodeBearer` instance to handle the OAuth2 flow.  This tells FastAPI where to find the authorization and token endpoints.
+*   **Code Verifier Storage:**  `code_verifier_storage` is an *in-memory* dictionary used to store the code verifiers associated with each user session.  **Important:** In a production environment, you *must* replace this with a secure storage mechanism like a database or session management. This is extremely important for security.
+*   **`generate_random_string` function:** Generates a cryptographically secure random string for the code verifier and state.
+*   **`generate_code_challenge` function:** Generates the code challenge from the code verifier using the SHA256 hash algorithm and base64 encoding, according to the PKCE specification.
+*   **`/authorize` endpoint:**
+    *   Generates a code verifier and code challenge.
+    *   Stores the code verifier in `code_verifier_storage` (remember: *insecure* for production).  It also generates and stores a `state` parameter to protect against CSRF attacks.
+    *   Constructs the authorization URL, including the necessary parameters: `response_type`, `client_id`, `redirect_uri`, `scope`, `code_challenge`, `code_challenge_method`, and `state`.
+    *   Redirects the user to the authorization server.
+*   **`/callback` endpoint:**
+    *   Receives the authorization code and state from the authorization server.
+    *   Retrieves the code verifier from `code_verifier_storage` using the `state` parameter.
+    *   Validates the state parameter to prevent CSRF attacks.
+    *   *Deletes* the code verifier from `code_verifier_storage` after use. This is crucial for security.
+    *   Exchanges the authorization code for an access token by making a POST request to the token endpoint.  The request includes the `grant_type`, `code`, `redirect_uri`, `client_id`, `code_verifier`, and `client_secret`.
+    *   Parses the response from the token endpoint and extracts the access token and token type.
+    *   Returns the access token (for demonstration purposes).  In a real application, you would store the access token securely (e.g., in a session or database) and use it to authenticate subsequent requests.
+*   **`/protected` endpoint:**  A simple example of a protected API endpoint that requires an access token.  FastAPI's `Depends` system handles the authentication using the `oauth2_scheme`.
+
+## Step 3: Running the Application
+
+Start the FastAPI application using Uvicorn:
+
+```bash
+uvicorn main:app --reload
+```
+
+This will start the server on `http://localhost:8000`.
+
+## Step 4: Testing the OAuth2 Flow
+
+1.  **Initiate Authorization:** Open your browser and navigate to `http://localhost:8000/authorize`.  You should be redirected to your authorization server's login page.
+2.  **Login:** Enter your credentials (if required) and authorize the application.
+3.  **Callback:** After successful authorization, you will be redirected back to your application's `/callback` endpoint (`http://localhost:8000/callback`).
+4.  **Access Token:** The `/callback` endpoint will display the access token that your application can use to access protected resources.
+5.  **Access Protected Resource:**  You can then use this access token to access the `/protected` endpoint (e.g., using `curl -H "Authorization: Bearer YOUR_ACCESS_TOKEN" http://localhost:8000/protected`).
+
+## Step 5: Important Security Considerations
+
+*   **Secure Storage of Code Verifiers and Access Tokens:** As mentioned earlier, the `code_verifier_storage` in this example is *insecure* and only for demonstration purposes. You *must* use a secure storage mechanism for code verifiers and access tokens in a production environment.  Options include:
+    *   **Database:** Store code verifiers and access tokens in a database associated with user sessions.
+    *   **Session Management:** Use a session management system (e.g., Redis, Memcached) to store code verifiers and access tokens.
+    *   **Encrypted Cookies:** Store access tokens in encrypted cookies (be mindful of cookie size limits).
+*   **State Parameter:** Always include and validate the `state` parameter in the authorization request and callback to prevent Cross-Site Request Forgery (CSRF) attacks. Our example includes basic `state` handling.
+*   **HTTPS:**  Ensure that your application and authorization server are using HTTPS to protect against eavesdropping.
+*   **Token Revocation:**  Implement a mechanism to revoke access tokens if necessary.
+*   **Client Secret Security:** While PKCE is designed for public clients, some authorization servers still require a client secret. Treat this client secret as sensitive information and protect it accordingly.
+*   **Input Validation:** Validate all inputs from the authorization server to prevent injection attacks.
+*   **Error Handling:** Implement robust error handling to gracefully handle unexpected errors during the OAuth2 flow.
+*   **Rate Limiting:** Implement rate limiting to prevent abuse and denial-of-service attacks.
+
+##  Further Enhancements
+
+*   **Refresh Tokens:** Implement refresh tokens to allow your application to obtain new access tokens without requiring the user to re-authorize.
+*   **JWTs (JSON Web Tokens):** Use JWTs for access tokens to provide a standard and verifiable way to represent user identity and permissions.
+*   **Custom Scopes:** Define custom scopes to control the level of access that your application has to protected resources.
+*   **Token Introspection:** Use token introspection to verify the validity and scope of access tokens.
+*   **Centralized Authentication Server:** Consider using a centralized authentication server (e.g., Keycloak, Auth0) to manage user authentication and authorization.
+
+## Conclusion
+
+Implementing OAuth2 with PKCE in FastAPI provides a secure and robust way to protect your APIs and user data.  By following the steps outlined in this guide and paying close attention to the security considerations, you can build a secure authentication flow for your web applications. Remember to always prioritize security and choose appropriate storage mechanisms for sensitive data.  Good luck!

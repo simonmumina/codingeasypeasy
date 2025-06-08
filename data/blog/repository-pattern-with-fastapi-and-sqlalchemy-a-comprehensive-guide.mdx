@@ -1,0 +1,383 @@
+---
+title: 'Repository Pattern with FastAPI and SQLAlchemy: A Comprehensive Guide'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags: ['fastapi', 'sqlalchemy', 'repository pattern', 'python', 'orm', 'database', 'architecture', 'design patterns']
+draft: false
+summary: 'Learn how to implement the Repository Pattern in FastAPI applications using SQLAlchemy for robust data access and separation of concerns. Includes detailed code examples and best practices.'
+authors: ['default']
+---
+
+# Repository Pattern with FastAPI and SQLAlchemy: A Comprehensive Guide
+
+This blog post provides a detailed guide on implementing the Repository Pattern in FastAPI applications using SQLAlchemy for data access. The Repository Pattern is a design pattern that promotes separation of concerns by abstracting away the data access layer from the business logic. This makes your code more testable, maintainable, and adaptable to changes in data storage.  We'll explore the benefits of this pattern and provide practical examples to get you started.
+
+## What is the Repository Pattern?
+
+The Repository Pattern acts as an intermediary between your application's domain logic and the data access layer.  Instead of directly interacting with the database (using SQLAlchemy in this case), your application interacts with a repository interface.  This interface defines the methods needed to access and manipulate data, such as `get`, `create`, `update`, and `delete`.
+
+**Key benefits of using the Repository Pattern:**
+
+*   **Separation of Concerns:** Decouples your business logic from the data access implementation.
+*   **Testability:**  You can easily mock the repository in your unit tests, allowing you to test your business logic without relying on a real database.
+*   **Maintainability:**  Changes to the database schema or ORM implementation won't directly affect your business logic, as long as the repository interface remains the same.
+*   **Flexibility:**  Allows you to easily switch between different data storage implementations (e.g., PostgreSQL, SQLite, MongoDB) without modifying your application's core logic.
+*   **Code Reusability:**  Centralizes data access logic, reducing code duplication.
+
+## Setting up your FastAPI Project with SQLAlchemy
+
+First, let's set up a basic FastAPI project with SQLAlchemy. We'll assume you have Python installed and virtual environment is activated.
+
+**1. Install Dependencies:**
+
+```bash
+pip install fastapi uvicorn sqlalchemy python-dotenv psycopg2-binary  # Use the correct database driver (psycopg2 for PostgreSQL)
+```
+
+**2. Project Structure:**
+
+A typical project structure might look like this:
+
+```
+my_fastapi_project/
+├── app/
+│   ├── __init__.py
+│   ├── database.py
+│   ├── models.py
+│   ├── repositories/
+│   │   ├── __init__.py
+│   │   ├── user_repository.py
+│   ├── schemas.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── users.py
+│   ├── main.py
+├── .env
+└── README.md
+```
+
+**3. Database Configuration (`app/database.py`):**
+
+We'll use SQLAlchemy to define our database connection.  Let's set up the engine and session:
+
+```python
+# app/database.py
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+from dotenv import load_dotenv
+import os
+
+load_dotenv()  # Load environment variables from .env
+
+DATABASE_URL = os.getenv("DATABASE_URL")  # e.g., "postgresql://user:password@host:port/database"
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not found in .env file")
+
+engine = create_engine(DATABASE_URL)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+
+# Dependency to get the database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+```
+
+Remember to create a `.env` file in your project root with the `DATABASE_URL` variable set to your database connection string. For example:
+
+```
+DATABASE_URL=postgresql://your_user:your_password@localhost:5432/your_database
+```
+
+**4. Define SQLAlchemy Models (`app/models.py`):**
+
+Let's define a simple `User` model:
+
+```python
+# app/models.py
+from sqlalchemy import Column, Integer, String
+from sqlalchemy.orm import relationship
+from .database import Base
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    email = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    is_active = Column(Integer, default=True)
+
+    # You can add relationships to other tables here if needed.
+    # For example:
+    # items = relationship("Item", back_populates="owner")
+```
+
+**5. Create the Database Tables:**
+
+In your `main.py` file or a separate script, add the following to create the tables (only run this once):
+
+```python
+# app/main.py or a separate script like create_db.py
+from .database import engine
+from .models import Base
+
+def create_tables():
+    Base.metadata.create_all(bind=engine)
+
+if __name__ == "__main__":
+    create_tables()
+```
+
+Run this script (e.g., `python app/main.py`) to create the tables in your database.
+
+## Implementing the Repository Pattern
+
+Now, let's implement the Repository Pattern for our `User` model.
+
+**1. Define a Repository Interface (`app/repositories/user_repository.py`):**
+
+Create an abstract base class (ABC) for our repository interface:
+
+```python
+# app/repositories/user_repository.py
+from abc import ABC, abstractmethod
+from typing import List, Optional
+
+from sqlalchemy.orm import Session
+from ..models import User
+
+
+class UserRepositoryInterface(ABC):
+    @abstractmethod
+    def get_user_by_id(self, user_id: int) -> Optional[User]:
+        pass
+
+    @abstractmethod
+    def get_user_by_username(self, username: str) -> Optional[User]:
+        pass
+
+    @abstractmethod
+    def get_all_users(self) -> List[User]:
+        pass
+
+    @abstractmethod
+    def create_user(self, user: User) -> User:
+        pass
+
+    @abstractmethod
+    def update_user(self, user_id: int, updated_user: dict) -> Optional[User]:
+        pass
+
+    @abstractmethod
+    def delete_user(self, user_id: int) -> bool:
+        pass
+```
+
+This interface defines the basic operations we need to perform on the `User` model.
+
+**2. Implement the Repository Class (`app/repositories/user_repository.py`):**
+
+Now, create a concrete implementation of the `UserRepositoryInterface` that uses SQLAlchemy to interact with the database:
+
+```python
+# app/repositories/user_repository.py
+from typing import List, Optional
+
+from sqlalchemy.orm import Session
+
+from ..models import User
+from .user_repository import UserRepositoryInterface
+
+
+class UserRepository(UserRepositoryInterface):
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_user_by_id(self, user_id: int) -> Optional[User]:
+        return self.db.query(User).filter(User.id == user_id).first()
+
+    def get_user_by_username(self, username: str) -> Optional[User]:
+         return self.db.query(User).filter(User.username == username).first()
+
+
+    def get_all_users(self) -> List[User]:
+        return self.db.query(User).all()
+
+    def create_user(self, user: User) -> User:
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def update_user(self, user_id: int, updated_user: dict) -> Optional[User]:
+        user = self.get_user_by_id(user_id)
+        if user:
+            for key, value in updated_user.items():
+                setattr(user, key, value)
+            self.db.commit()
+            self.db.refresh(user)
+            return user
+        return None
+
+    def delete_user(self, user_id: int) -> bool:
+        user = self.get_user_by_id(user_id)
+        if user:
+            self.db.delete(user)
+            self.db.commit()
+            return True
+        return False
+```
+
+This class implements the methods defined in the `UserRepositoryInterface` using SQLAlchemy's `Session` object to interact with the database.
+
+**3. Define Pydantic Schemas (`app/schemas.py`):**
+
+We'll use Pydantic to define data validation and serialization schemas for our API:
+
+```python
+# app/schemas.py
+from pydantic import BaseModel
+
+class UserBase(BaseModel):
+    username: str
+    email: str
+
+class UserCreate(UserBase):
+    password: str
+
+class UserUpdate(BaseModel):
+    username: str | None = None
+    email: str | None = None
+    is_active: bool | None = None
+
+
+class User(UserBase):
+    id: int
+    is_active: bool
+
+    class Config:
+        orm_mode = True
+```
+
+These schemas define the structure of the data we'll be sending to and receiving from our API.
+
+## Integrating with FastAPI
+
+Now, let's integrate the Repository Pattern into our FastAPI application.
+
+**1. Create FastAPI Endpoints (`app/api/users.py`):**
+
+```python
+# app/api/users.py
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from .. import schemas, models
+from ..database import get_db
+from ..repositories.user_repository import UserRepository
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+
+@router.post("/", response_model=schemas.User, status_code=201)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    # Hash the password (consider using a library like passlib or bcrypt)
+    hashed_password = user.password + "notreallyhashed" #This is not a secure way to hash passwords! Use a proper hashing library.
+
+    db_user = models.User(username=user.username, email=user.email, hashed_password=hashed_password)
+    repo = UserRepository(db)
+    return repo.create_user(db_user)
+
+
+
+@router.get("/{user_id}", response_model=schemas.User)
+def read_user(user_id: int, db: Session = Depends(get_db)):
+    repo = UserRepository(db)
+    db_user = repo.get_user_by_id(user_id)
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return db_user
+
+
+@router.get("/", response_model=List[schemas.User])
+def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    repo = UserRepository(db)
+    users = repo.get_all_users()
+    return users
+
+@router.put("/{user_id}", response_model=schemas.User)
+def update_user(user_id: int, user: schemas.UserUpdate, db: Session = Depends(get_db)):
+    repo = UserRepository(db)
+    updated_user = repo.update_user(user_id, user.dict(exclude_unset=True))
+    if updated_user is None:
+         raise HTTPException(status_code=404, detail="User not found")
+    return updated_user
+
+@router.delete("/{user_id}")
+def delete_user(user_id: int, db: Session = Depends(get_db)):
+    repo = UserRepository(db)
+    deleted = repo.delete_user(user_id)
+    if not deleted:
+       raise HTTPException(status_code=404, detail="User not found")
+    return {"message": "User deleted successfully"}
+```
+
+**2. Include the Router in `main.py`:**
+
+```python
+# app/main.py
+from fastapi import FastAPI
+
+from .api import users
+from .database import engine
+from .models import Base
+
+def create_tables():
+    Base.metadata.create_all(bind=engine)
+
+app = FastAPI()
+
+create_tables() # creates the tables upon startup!
+
+app.include_router(users.router)
+
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
+```
+
+## Testing the Implementation
+
+You can now test your API using a tool like `curl` or Postman.  Here are some example requests:
+
+*   **Create a user:**
+
+    ```bash
+    curl -X POST -H "Content-Type: application/json" -d '{"username": "testuser", "email": "test@example.com", "password": "password123"}' http://localhost:8000/users/
+    ```
+
+*   **Get a user by ID:**
+
+    ```bash
+    curl http://localhost:8000/users/1
+    ```
+
+*   **Get all users:**
+
+    ```bash
+    curl http://localhost:8000/users/
+    ```
+
+## Conclusion
+
+This blog post has demonstrated how to implement the Repository Pattern in a FastAPI application using SQLAlchemy. By using this pattern, you can significantly improve the testability, maintainability, and flexibility of your code. Remember to adapt the code examples to your specific needs and database schema.  Consider using a robust password hashing library like `passlib` or `bcrypt` for production applications. Remember to implement proper error handling and validation throughout your application.  This pattern is a valuable tool for building robust and scalable applications with FastAPI and SQLAlchemy.
