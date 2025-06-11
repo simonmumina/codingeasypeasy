@@ -1,0 +1,374 @@
+---
+title: 'Secure Web2py with Multi-Factor Authentication (MFA): A Comprehensive Setup Guide'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags:
+  [
+    'web2py',
+    'multi-factor authentication',
+    'MFA',
+    'security',
+    'python',
+    'authentication',
+    '2FA',
+    'google authenticator',
+    'TOTP',
+  ]
+draft: false
+summary: 'Learn how to significantly enhance the security of your Web2py applications by implementing multi-factor authentication (MFA). This guide provides a step-by-step approach using Google Authenticator and TOTP, complete with code examples.'
+authors: ['default']
+---
+
+# Secure Web2py with Multi-Factor Authentication (MFA): A Comprehensive Setup Guide
+
+In today's digital landscape, security is paramount. Single-factor authentication (username and password) is often insufficient to protect your Web2py applications from unauthorized access. This is where multi-factor authentication (MFA) comes in. MFA adds an extra layer of security by requiring users to provide two or more verification factors to prove their identity.
+
+This guide will walk you through the process of implementing MFA in your Web2py application using Google Authenticator (or a similar TOTP app) and the `pyotp` Python library. We'll cover everything from setting up the necessary libraries to integrating MFA into your user login flow.
+
+## Why Use Multi-Factor Authentication (MFA) for Web2py?
+
+- **Enhanced Security:** MFA drastically reduces the risk of account compromise, even if a password is stolen or cracked.
+- **Compliance:** Many regulations and security standards require MFA for sensitive data.
+- **User Trust:** Implementing MFA demonstrates a commitment to user security and builds trust.
+- **Mitigation of Phishing Attacks:** Even if a user falls for a phishing attack and enters their password, the attacker still needs the second factor, which they won't have.
+
+## Prerequisites
+
+- **Web2py Installation:** You should have a working Web2py environment set up.
+- **Python Knowledge:** Basic Python programming skills are required.
+- **`pyotp` Library:** You'll need to install the `pyotp` library. You can install it using pip:
+
+  ```bash
+  pip install pyotp
+  ```
+
+## Step-by-Step MFA Implementation Guide
+
+### 1. Setting up the Database
+
+First, we need to add a column to your user table to store the secret key used for generating TOTP codes. If you're using Web2py's built-in auth system, this might be `auth_user`. Modify your `db.py` file (typically in the `models` directory) to add a field for storing the secret key.
+
+```plaintext
+# db.py
+db = DAL('sqlite://storage.sqlite')
+
+from gluon.tools import Auth, Service, PluginManager
+
+auth = Auth(db)
+service = Service()
+plugins = PluginManager()
+
+# Define the auth_user table (or your custom user table)
+auth.define_tables(username=True, signature=False)
+
+# Add the 'mfa_secret' field to the auth_user table
+db.auth_user.define_field('mfa_secret', 'string', default=None)
+
+db.define_table('your_other_table', # Example
+  Field('some_field', 'string'))
+
+# Create all tables if they don't exist
+db.commit()
+```
+
+**Explanation:**
+
+- We're using Web2py's DAL (Database Abstraction Layer) to define our database.
+- `auth.define_tables()` creates the default authentication tables, including `auth_user`.
+- `db.auth_user.define_field('mfa_secret', 'string', default=None)` adds a new string field named `mfa_secret` to the `auth_user` table. This field will store the secret key used to generate TOTP codes for each user. The `default=None` is important to allow existing users to log in without MFA until they activate it.
+- `db.commit()` ensures the changes are saved to the database.
+
+### 2. Generating and Displaying the QR Code
+
+Now, let's create a function to generate a unique secret key for each user and display a QR code that they can scan with their Google Authenticator app (or a similar app). This function will be called when a user wants to enable MFA.
+
+Create a new controller, for example `mfa.py`, and add the following code:
+
+```plaintext
+# controllers/mfa.py
+import pyotp
+import qrcode
+from io import BytesIO
+from gluon import current
+
+def enable():
+  """
+  Enables MFA for the current user. Generates a secret key,
+  creates a QR code, and displays it to the user.
+  """
+  user = auth.user
+  if not user:
+    redirect(URL('default', 'user', args='login'))
+
+  if user.mfa_secret:
+    return dict(message="MFA is already enabled.  Disable it first.") # MFA is already enabled
+
+  # Generate a new secret key
+  secret = pyotp.random_base32()
+
+  # Update the user's mfa_secret in the database
+  db(db.auth_user.id == user.id).update(mfa_secret=secret)
+  db.commit()
+
+  # Construct the provisioning URI for Google Authenticator
+  provisioning_uri = pyotp.TOTP(secret).provisioning_uri(user.email, issuer_name="YourWeb2pyApp")
+
+  # Generate the QR code image
+  qr = qrcode.QRCode(
+      version=1,
+      error_correction=qrcode.constants.ERROR_CORRECT_L,
+      box_size=10,
+      border=4,
+  )
+  qr.add_data(provisioning_uri)
+  qr.make(fit=True)
+
+  img = qr.make_image(fill_color="black", back_color="white")
+
+  # Save the image to a buffer in memory.
+  img_buffer = BytesIO()
+  img.save(img_buffer, 'PNG')
+  img_buffer.seek(0)
+
+  # Convert the image buffer to base64 for embedding in HTML
+  img_base64 = "data:image/png;base64," + base64.b64encode(img_buffer.read()).decode('utf-8')
+
+
+  return dict(qr_code=img_base64, secret=secret)
+
+
+def disable():
+  """
+  Disables MFA for the current user.
+  """
+  user = auth.user
+  if not user:
+    redirect(URL('default', 'user', args='login'))
+
+  # Remove the mfa_secret from the user's record
+  db(db.auth_user.id == user.id).update(mfa_secret=None)
+  db.commit()
+
+  session.flash = "MFA disabled."
+  redirect(URL('default', 'index')) # Redirect to home or profile page
+
+
+def verify():
+    """
+    Verifies the MFA code entered by the user.
+    """
+    if request.vars.code:
+        user = auth.user
+        if not user or not user.mfa_secret:
+            session.flash = "MFA not enabled or user not logged in."
+            redirect(URL('default', 'index'))
+
+        totp = pyotp.TOTP(user.mfa_secret)
+        if totp.verify(request.vars.code):
+            session.mfa_verified = True # Set a session variable to indicate MFA is verified
+            session.flash = "MFA verified successfully!"
+            redirect(URL('default', 'index')) # Redirect to where the user was trying to go
+
+        else:
+            session.flash = "Invalid MFA code."
+            redirect(URL('mfa', 'prompt'))  # Redirect back to the prompt page
+    else:
+        session.flash = "Please enter the MFA code."
+        redirect(URL('mfa', 'prompt'))
+
+
+def prompt():
+    """
+    Displays the MFA code prompt to the user.
+    """
+    user = auth.user
+    if not user or not user.mfa_secret:
+        session.flash = "MFA not enabled or user not logged in."
+        redirect(URL('default', 'index'))
+    return dict()
+
+```
+
+**Explanation:**
+
+- **`enable()`:**
+
+  - Generates a random base32 encoded secret key using `pyotp.random_base32()`.
+  - Updates the `mfa_secret` field in the database for the current user.
+  - Creates a provisioning URI using `pyotp.TOTP(secret).provisioning_uri()`. This URI is compatible with Google Authenticator and other TOTP apps. The `issuer_name` is what will be displayed in the app.
+  - Generates a QR code from the provisioning URI using the `qrcode` library.
+  - Converts the QR code image to a base64 encoded string so that it can be embedded directly in the HTML.
+  - Returns the base64 encoded QR code and the secret key to the view.
+
+- **`disable()`:**
+
+  - Removes the `mfa_secret` from the user's record in the database, effectively disabling MFA.
+
+- **`verify()`:**
+
+  - Takes the MFA code entered by the user as input.
+  - Retrieves the user's `mfa_secret` from the database.
+  - Creates a `pyotp.TOTP` object with the secret.
+  - Uses `totp.verify(request.vars.code)` to check if the code is valid. It validates the input code against the current, previous, and next time windows.
+  - If the code is valid, sets `session.mfa_verified = True` to indicate that the user has successfully verified their MFA. Crucially, this session variable will be checked on protected pages.
+  - Redirects the user to the intended destination.
+
+- **`prompt()`:**
+  - Displays the MFA code prompt to the user. This is the page where the user will enter the code generated by their authenticator app.
+
+### 3. Creating the Views
+
+Now, create the corresponding views for the `enable()`, `disable()`, and `prompt()` functions in your `views/mfa` directory.
+
+- **`views/mfa/enable.html`:**
+
+  ```html
+  {{extend 'layout.html'}}
+
+  <h1>Enable Multi-Factor Authentication (MFA)</h1>
+
+  {{if message:}}
+  <div class="alert alert-info">{{=message}}</div>
+  {{else:}}
+  <p>Scan the QR code below with your Google Authenticator app (or similar):</p>
+  <img src="{{=qr_code}}" alt="QR Code" />
+  <p>
+    If you cannot scan the QR code, you can manually enter the following secret key into your
+    authenticator app: <strong>{{=secret}}</strong>
+  </p>
+  <p>Once you've scanned the QR code, test it by entering the code in the prompt</p>
+  <a href="{{=URL('mfa', 'prompt')}}" class="btn btn-primary">Verify MFA</a>
+  {{pass}}
+  ```
+
+- **`views/mfa/prompt.html`:**
+
+  ```html
+  {{extend 'layout.html'}}
+
+  <h1>Verify Multi-Factor Authentication</h1>
+
+  {{if session.flash:}}
+  <div class="alert alert-danger">{{=session.flash}}</div>
+  {{pass}}
+
+  <form action="{{=URL('mfa', 'verify')}}" method="post">
+    <div class="form-group">
+      <label for="code">Enter Verification Code:</label>
+      <input type="text" class="form-control" id="code" name="code" required />
+    </div>
+    <button type="submit" class="btn btn-primary">Verify</button>
+  </form>
+  ```
+
+**Explanation:**
+
+- **`enable.html`:**
+  - Displays the QR code generated by the `enable()` function.
+  - Also displays the secret key in case the user cannot scan the QR code.
+  - Provides a link to the `prompt()` action to verify the setup.
+- **`prompt.html`:**
+  - Displays a form where the user can enter the verification code from their authenticator app.
+  - Displays any flash messages, such as error messages.
+
+### 4. Integrating MFA into the Login Flow
+
+Now, we need to modify your login flow to check if MFA is enabled for the user and, if so, redirect them to the MFA verification page.
+
+Modify your login action (usually in `controllers/default.py`) like this:
+
+```plaintext
+# controllers/default.py
+def user():
+    """
+    Handles user login, logout, and registration.
+    """
+    if auth.user is not None:
+        if auth.user.mfa_secret and not session.get('mfa_verified'):
+            redirect(URL('mfa', 'prompt'))
+
+    return dict(form=auth())
+
+def index():
+    """
+    Example index page that requires login
+    """
+    if not auth.user:
+        redirect(URL('default', 'user', args='login'))
+
+    if auth.user.mfa_secret and not session.get('mfa_verified'):
+        redirect(URL('mfa', 'prompt'))
+
+    return dict(message="Welcome! You are logged in.")
+```
+
+**Explanation:**
+
+- Inside your `user()` function (the function that handles login/logout/register), after a successful login, we check if the user has `mfa_secret` set in their database record **and** if `session.mfa_verified` is _not_ set (or is false).
+- If both conditions are true, we redirect the user to the `mfa/prompt` action, which will display the MFA code prompt.
+- The `index()` function has the same check to protect the index page with MFA. We check `auth.user`, then `auth.user.mfa_secret and not session.get('mfa_verified')` and redirect if needed. This demonstrates how to protect a page with MFA.
+
+### 5. Protecting Your Application with MFA
+
+To protect your Web2py application with MFA, you need to check the `session.mfa_verified` variable in your controllers before allowing access to protected resources. Here's an example:
+
+```plaintext
+# controllers/your_controller.py
+def protected_page():
+    """
+    A protected page that requires MFA verification.
+    """
+    if not auth.user:
+        redirect(URL('default', 'user', args='login'))  # Ensure user is logged in first
+
+    if auth.user.mfa_secret and not session.get('mfa_verified'):
+        session.next_url = URL('your_controller', 'protected_page')  # Store the current URL
+        redirect(URL('mfa', 'prompt')) # Redirect to the prompt page
+
+    return dict(message="You are accessing a protected page with MFA!")
+```
+
+**Explanation:**
+
+- First, we check if the user is logged in (`if not auth.user`).
+- Then, we check if the user has MFA enabled (`auth.user.mfa_secret`) and if they have verified it in the current session (`not session.mfa_verified`).
+- If both conditions are true, we store the URL of the protected page in `session.next_url`. This is so that after verification, the user can be redirected back to the page they were trying to access.
+- Finally, we redirect the user to the `mfa/prompt` action.
+
+You can apply this same pattern to any controller action that requires MFA. Always ensure that the user is logged in _before_ checking for MFA status.
+
+### 6. Add Enable/Disable MFA links to your Layout
+
+Add links to your layout to enable and disable MFA.
+
+```html
+{{extend 'layout.html'}}
+<div class="section">
+  {{if auth.user:}}
+  <div class="btn-group">
+    {{if auth.user.mfa_secret:}}
+    <a class="btn btn-warning" href="{{=URL('mfa', 'disable')}}">Disable MFA</a>
+    {{else:}}
+    <a class="btn btn-success" href="{{=URL('mfa', 'enable')}}">Enable MFA</a>
+    {{pass}}
+  </div>
+  {{pass}}
+</div>
+```
+
+This allows users to easily manage their MFA settings.
+
+## Important Considerations
+
+- **Secret Key Storage:** Store the `mfa_secret` securely in your database. Consider using encryption if you're dealing with highly sensitive data.
+- **Error Handling:** Implement proper error handling for invalid codes, network issues, and other potential problems.
+- **User Experience:** Make the MFA setup process as smooth and intuitive as possible for your users. Provide clear instructions and troubleshooting tips.
+- **Backup Codes:** Consider implementing backup codes that users can use if they lose access to their authenticator app. This provides a fallback mechanism for account recovery.
+- **Session Management:** Carefully manage your session. `session.mfa_verified` is a simple example. Consider more robust session management and expiration strategies.
+- **Security Audits:** Regularly review your MFA implementation to ensure it's up-to-date and secure.
+- **Rate Limiting:** Implement rate limiting to prevent brute-force attacks on the MFA verification endpoint.
+- **TOTP Implementation:** While this guide focuses on TOTP, you can explore other MFA methods like SMS codes or push notifications. However, SMS is generally considered less secure than TOTP.
+
+## Conclusion
+
+Implementing multi-factor authentication (MFA) is a critical step in securing your Web2py applications. By following this guide, you can easily add an extra layer of protection and significantly reduce the risk of unauthorized access. Remember to prioritize user experience and security best practices for a robust and user-friendly MFA solution. Remember to test your implementation thoroughly. Good luck!

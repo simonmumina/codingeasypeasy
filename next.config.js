@@ -85,7 +85,7 @@ module.exports = () => {
     },
     eslint: {
       dirs: ['app', 'components', 'layouts', 'scripts', 'latestBlogs'],
-      ignoreDuringBuilds: true,
+      // ignoreDuringBuilds: true,
     },
     images: {
       remotePatterns: [

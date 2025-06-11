@@ -1,0 +1,453 @@
+---
+title: 'Integrating Stripe Payment Gateway with Web2py: A Comprehensive Guide'
+date: '2024-10-27'
+lastmod: '2024-10-27'
+tags:
+  [
+    'web2py',
+    'stripe',
+    'payment gateway',
+    'python',
+    'web development',
+    'e-commerce',
+    'integration',
+    'tutorial',
+  ]
+draft: false
+summary: 'Learn how to seamlessly integrate Stripe, a powerful payment gateway, into your Web2py web applications. This comprehensive guide covers everything from setting up your Stripe account to processing payments securely and handling webhook events, complete with code examples.'
+authors: ['default']
+---
+
+# Integrating Stripe Payment Gateway with Web2py: A Comprehensive Guide
+
+This blog post will guide you through integrating Stripe, a leading payment gateway, with your Web2py application. Stripe provides a robust and easy-to-use API for handling online payments, subscriptions, and more. This guide will cover the essential steps from setting up your Stripe account to handling successful payments and managing recurring subscriptions.
+
+## Why Stripe and Web2py?
+
+- **Stripe:** Known for its developer-friendly API, robust security, and comprehensive features. It handles various payment methods and offers tools for managing subscriptions, refunds, and disputes.
+
+- **Web2py:** A full-stack Python web framework designed for rapid development and security. Its simplicity and ease of use make it a great choice for building web applications quickly.
+
+Combining these two technologies allows you to build powerful and secure e-commerce applications with ease.
+
+## Prerequisites
+
+Before we start, make sure you have the following:
+
+- A Stripe account ([Sign up for a Stripe account](https://stripe.com/)).
+- A Web2py installation.
+- Basic knowledge of Python and Web2py.
+
+## Step 1: Setting up your Stripe Account
+
+1.  **Create a Stripe Account:** If you don't already have one, go to the Stripe website and create an account.
+
+2.  **Retrieve your API Keys:** Once your account is set up, navigate to the Stripe Dashboard and find your API keys. You'll need your **Secret Key** and **Publishable Key**. Remember to treat your Secret Key like a password and keep it secure. Never expose it in client-side code.
+
+3.  **Enable Webhooks:** Stripe uses webhooks to notify your application about events like successful payments, failed payments, and subscription updates. Configure webhooks in your Stripe Dashboard under the "Developers" section. You will need to set up a URL in your Web2py application that Stripe can send these notifications to. More on this later.
+
+## Step 2: Installing the Stripe Python Library
+
+The easiest way to interact with the Stripe API in your Web2py application is to use the official Stripe Python library. Install it using pip:
+
+```bash
+pip install stripe
+```
+
+## Step 3: Integrating Stripe into your Web2py Application
+
+1.  **Create a Model:** Start by creating a model in your Web2py application to handle the Stripe integration. This model will contain functions to interact with the Stripe API.
+
+    ```plaintext
+    # models/db.py
+    from gluon import *
+    import stripe
+
+    db = DAL('sqlite://storage.sqlite')
+
+    db.define_table('products',
+        Field('name', 'string'),
+        Field('description', 'text'),
+        Field('price', 'decimal', default=0.00),
+        Field('stripe_price_id', 'string') # Store the Stripe Price ID
+    )
+
+    db.define_table('orders',
+        Field('product_id', 'reference products'),
+        Field('amount', 'decimal'),
+        Field('stripe_payment_intent_id', 'string'),
+        Field('status', 'string', default='pending') # pending, completed, failed
+    )
+
+
+    def create_stripe_price(product_name, amount, currency='usd'):
+        """Creates a Stripe Price object and returns its ID."""
+        try:
+            stripe.api_key = 'YOUR_STRIPE_SECRET_KEY'  # Replace with your actual secret key
+            price = stripe.Price.create(
+                unit_amount=int(amount * 100),  # Amount in cents
+                currency=currency,
+                product_data={
+                    'name': product_name,
+                },
+            )
+            return price['id']
+        except Exception as e:
+            print(f"Error creating Stripe Price: {e}")
+            return None
+
+
+    def process_payment(amount, currency='usd'):
+        """Creates a Stripe Payment Intent."""
+        try:
+            stripe.api_key = 'YOUR_STRIPE_SECRET_KEY'  # Replace with your actual secret key
+            intent = stripe.PaymentIntent.create(
+                amount=int(amount * 100),  # Amount in cents
+                currency=currency,
+                automatic_payment_methods={
+                    'enabled': True,
+                },
+            )
+            return intent['client_secret'], intent['id'] #Return client secret and intent ID
+
+        except Exception as e:
+            print(f"Error creating Payment Intent: {e}")
+            return None, None
+
+
+    def retrieve_payment_intent(payment_intent_id):
+        """Retrieves a Stripe Payment Intent."""
+        try:
+            stripe.api_key = 'YOUR_STRIPE_SECRET_KEY'  # Replace with your actual secret key
+            intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+            return intent
+        except Exception as e:
+            print(f"Error retrieving Payment Intent: {e}")
+            return None
+
+    def handle_stripe_webhook(event):
+        """Handles Stripe webhook events."""
+        if event['type'] == 'payment_intent.succeeded':
+            payment_intent = event['data']['object']
+            payment_intent_id = payment_intent['id']
+
+            # Find the order associated with this Payment Intent
+            order = db(db.orders.stripe_payment_intent_id == payment_intent_id).select().first()
+            if order:
+                order.update_record(status='completed')
+                db.commit()
+                print(f"Order {order.id} marked as completed.")
+            else:
+                print(f"Order not found for Payment Intent: {payment_intent_id}")
+
+        elif event['type'] == 'payment_intent.payment_failed':
+            payment_intent = event['data']['object']
+            payment_intent_id = payment_intent['id']
+
+            # Find the order associated with this Payment Intent
+            order = db(db.orders.stripe_payment_intent_id == payment_intent_id).select().first()
+            if order:
+                order.update_record(status='failed')
+                db.commit()
+                print(f"Order {order.id} marked as failed.")
+            else:
+                print(f"Order not found for Payment Intent: {payment_intent_id}")
+
+        else:
+            print(f"Unhandled event type: {event['type']}")
+
+
+    # Example of creating a Stripe Price for an existing product
+    # product = db(db.products.id == 1).select().first() # Get product id 1
+    # if product and not product.stripe_price_id:
+    #     price_id = create_stripe_price(product.name, product.price)
+    #     if price_id:
+    #         product.update_record(stripe_price_id=price_id)
+    #         db.commit()
+    #         print(f"Created Stripe Price {price_id} for product {product.id}")
+    ```
+
+    **Important:** Replace `'YOUR_STRIPE_SECRET_KEY'` with your actual Stripe Secret Key. **Never** store your secret key directly in your client-side code. This example shows it in the model for demonstration purposes only. In a real application, consider using environment variables or a configuration file to store sensitive information.
+
+2.  **Create a Controller:** Create a controller to handle the logic for processing payments and displaying product information.
+
+    ```plaintext
+    # controllers/default.py
+    def index():
+        products = db(db.products).select()
+        return dict(products=products)
+
+
+    def create_order():
+        product_id = request.vars.product_id
+        product = db(db.products.id == product_id).select().first()
+
+        if not product:
+            session.flash = 'Invalid product'
+            redirect(URL('index'))
+
+        client_secret, payment_intent_id = process_payment(product.price)  # From your model
+
+        if not client_secret:
+            session.flash = 'Error processing payment'
+            redirect(URL('index'))
+
+        order_id = db.orders.insert(
+            product_id=product_id,
+            amount=product.price,
+            stripe_payment_intent_id=payment_intent_id
+        )
+        db.commit()
+
+        session.client_secret = client_secret
+        session.order_id = order_id
+
+
+        return dict(client_secret=client_secret, order_id = order_id) #Pass client secret and order id to view
+
+
+
+    def payment_confirmation():
+      order_id = request.vars.order_id
+      order = db(db.orders.id == order_id).select().first()
+      if not order:
+        session.flash = "Invalid Order ID"
+        redirect(URL('index'))
+
+      return dict(order = order)
+
+
+    def stripe_webhook():
+      """Endpoint to handle Stripe webhook events."""
+      request_data = request.body.read()
+      signature = request.headers.get('Stripe-Signature')
+      endpoint_secret = 'YOUR_STRIPE_WEBHOOK_SECRET'  # Replace with your actual Webhook Secret
+      event = None
+
+      try:
+          event = stripe.Webhook.construct_event(
+              request_data, signature, endpoint_secret
+          )
+      except ValueError as e:
+          print(f"Invalid payload: {e}")
+          raise HTTP(400, 'Invalid payload')
+      except stripe.error.SignatureVerificationError as e:
+          print(f"Invalid signature: {e}")
+          raise HTTP(400, 'Invalid signature')
+
+      handle_stripe_webhook(event) # Call the webhook handler from your model
+
+      return HTTP(200)
+
+    ```
+
+    - `index()`: Displays a list of products.
+    - `create_order()`: Initiates the Stripe payment process, creates a Payment Intent, and stores the order details in your database. It also saves the `client_secret` in the session to be used in the client-side code.
+    - `payment_confirmation()`: Displays the order confirmation page after successful payment.
+    - `stripe_webhook()`: This is the crucial endpoint that receives webhook events from Stripe. It verifies the signature for security and calls the `handle_stripe_webhook` function in the model to update the order status in your database based on the event type. **Replace `'YOUR_STRIPE_WEBHOOK_SECRET'` with your actual Webhook Secret.** You can find the webhook secret in your Stripe dashboard under the "Webhooks" section after setting up an endpoint.
+
+3.  **Create Views:** Create views to display the products and the payment form.
+
+    ```html
+    <!-- views/default/index.html -->
+    {{extend 'layout.html'}}
+
+    <h1>Products</h1>
+
+    <ul>
+      {{for product in products:}}
+      <li>
+        {{=product.name}} - ${{=product.price}}
+        <a href="{{=URL('create_order', vars=dict(product_id=product.id))}}">Buy Now</a>
+      </li>
+      {{pass}}
+    </ul>
+    ```
+
+    ```html
+    <!-- views/default/create_order.html -->
+    {{extend 'layout.html'}}
+
+    <h1>Checkout</h1>
+    <p>Confirm your purchase.</p>
+
+    <div id="payment-form"></div>
+
+    <script src="https://js.stripe.com/v3/"></script>
+    <script>
+      const stripe = Stripe('YOUR_STRIPE_PUBLISHABLE_KEY') // Replace with your publishable key
+      const clientSecret = '{{=session.client_secret}}'
+      const orderId = '{{=session.order_id}}'
+
+      const appearance = {
+        theme: 'stripe',
+      }
+      const elements = stripe.elements({ appearance, clientSecret: clientSecret })
+
+      const paymentElement = elements.create('payment')
+      paymentElement.mount('#payment-form')
+
+      const form = document.getElementById('payment-form')
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault()
+
+        const { error } = await stripe.confirmPayment({
+          elements,
+          confirmParams: {
+            // Make sure to change this to your payment completion page
+            return_url:
+              "{{=URL('payment_confirmation', vars=dict(order_id=orderId), scheme=True, host=True)}}",
+          },
+        })
+
+        if (error) {
+          // This point will only be reached if there is an immediate error when
+          // confirming the payment. Show error to your customer.
+          const messageContainer = document.querySelector('#error-message')
+          messageContainer.textContent = error.message
+        } else {
+          // Your customer will be redirected to your `return_url`. For some payment
+          // methods like iDEAL, your customer will be redirected to an intermediate
+          // site first to authorize the payment, then redirected to the `return_url`.
+        }
+      })
+
+      form.addEventListener('keyup', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          form.dispatchEvent(new Event('submit'))
+        }
+      })
+
+      form.addEventListener('click', function (event) {
+        event.preventDefault()
+        form.dispatchEvent(new Event('submit'))
+      })
+    </script>
+    ```
+
+    ```html
+    <!-- views/default/payment_confirmation.html -->
+    {{extend 'layout.html'}}
+
+    <h1>Payment Confirmation</h1>
+    {{if order.status == 'completed':}}
+    <p>Thank you for your order! Your payment has been processed successfully.</p>
+    <p>Order ID: {{=order.id}}</p>
+    <p>Product: {{=order.product_id}}</p>
+    <p>Amount: ${{=order.amount}}</p>
+
+    {{elif order.status == 'failed':}}
+    <p>Payment Failed! There was an error processing your payment.</p>
+
+    {{else:}}
+    <p>Payment is still pending! Please refresh the page later to see its status.</p>
+    {{pass}}
+
+    <a href="{{=URL('index')}}">Back to Products</a>
+    ```
+
+    - **`index.html`:** Displays a list of products with a "Buy Now" button for each product.
+    - **`create_order.html`:** This view contains the Stripe Elements payment form. It initializes Stripe with your **Publishable Key** (replace `'YOUR_STRIPE_PUBLISHABLE_KEY'` with your actual publishable key) and uses Stripe Elements to create a secure payment form. It also uses the `client_secret` obtained from the `create_order` controller function to confirm the payment.
+    - **`payment_confirmation.html`:** Displays a confirmation message after a successful payment or an error message if the payment failed. It retrieves the order status from the database and displays the appropriate message.
+
+4.  **Configure a secure route for Webhooks:**
+
+    Update your `routes.py` file in your Web2py application to allow POST requests to the Stripe webhook endpoint without requiring a CSRF token.
+
+    ```plaintext
+    #routes.py
+    routers = dict(
+        BASE = dict(
+            default_application='yourapp',
+            default_controller='default',
+            default_function='index',
+            modes = dict(
+                stripe_webhook=dict(
+                    restrict_methods=['POST'], # Allow only POST requests
+                    csrftoken=False # Disable CSRF token check
+                )
+            )
+        )
+    )
+    ```
+
+    Then, rename your `stripe_webhook` controller function.
+
+    ```plaintext
+    # controllers/default.py
+    def stripe_webhook():
+      """Endpoint to handle Stripe webhook events."""
+      request_data = request.body.read()
+      signature = request.headers.get('Stripe-Signature')
+      endpoint_secret = 'YOUR_STRIPE_WEBHOOK_SECRET'  # Replace with your actual Webhook Secret
+      event = None
+
+      try:
+          event = stripe.Webhook.construct_event(
+              request_data, signature, endpoint_secret
+          )
+      except ValueError as e:
+          print(f"Invalid payload: {e}")
+          raise HTTP(400, 'Invalid payload')
+      except stripe.error.SignatureVerificationError as e:
+          print(f"Invalid signature: {e}")
+          raise HTTP(400, 'Invalid signature')
+
+      handle_stripe_webhook(event) # Call the webhook handler from your model
+
+      return HTTP(200)
+
+    ```
+
+    This way, the Web2py framework does not expect a CSRF token with the POST request to the `/yourapp/default/stripe_webhook` endpoint, which is a requirement to receive Stripe events.
+
+## Step 4: Testing your Integration
+
+1.  **Use Stripe Test Mode:** Stripe provides a test mode that allows you to simulate payments without using real credit cards. You can find test card numbers in the Stripe documentation.
+
+2.  **Set up Webhooks for Testing:** During development, you can use tools like Stripe CLI to forward webhook events to your local development server. This avoids the need to deploy your application to a public server just for testing webhooks.
+
+    ```bash
+    stripe listen --forward-to localhost:8000/your_app_name/default/stripe_webhook
+    ```
+
+    Replace `localhost:8000/your_app_name/default/stripe_webhook` with the actual URL of your webhook endpoint in your Web2py application. The Stripe CLI will provide you with a webhook secret that you need to configure in your Stripe webhook settings and in your `stripe_webhook` controller function.
+
+3.  **Test Payment Flows:** Test the entire payment flow, from adding a product to the cart to completing the payment and receiving the confirmation. Also, test error scenarios, such as declined payments or invalid card details.
+
+## Step 5: Handling Subscriptions (Optional)
+
+If you need to handle recurring subscriptions, Stripe provides a powerful subscription API. Here's a basic example of how to create a subscription:
+
+```plaintext
+# models/db.py (add this to your model file)
+def create_stripe_subscription(customer_id, price_id):
+    """Creates a Stripe Subscription for a customer."""
+    try:
+        stripe.api_key = 'YOUR_STRIPE_SECRET_KEY'
+        subscription = stripe.Subscription.create(
+            customer=customer_id,
+            items=[
+                {'price': price_id},
+            ],
+        )
+        return subscription['id']
+    except Exception as e:
+        print(f"Error creating Stripe Subscription: {e}")
+        return None
+```
+
+Remember to create the customer and price objects in Stripe before creating the subscription.
+
+## Best Practices
+
+- **Security:** Always handle sensitive data securely. Never store credit card details directly in your application. Use Stripe's tokenization and encryption features to protect customer data.
+- **Error Handling:** Implement robust error handling to gracefully handle any issues during the payment process. Log errors for debugging and provide informative messages to the user.
+- **Testing:** Thoroughly test your integration in both test and production environments. Use Stripe's testing tools and simulate various scenarios to ensure that your integration is working correctly.
+- **Webhooks:** Use webhooks to keep your application synchronized with Stripe. Webhooks are essential for handling asynchronous events such as successful payments, failed payments, and subscription updates.
+
+## Conclusion
+
+Integrating Stripe with Web2py allows you to build secure and feature-rich e-commerce applications with ease. By following the steps outlined in this guide, you can seamlessly process payments, manage subscriptions, and provide a great user experience for your customers. Remember to always prioritize security and thoroughly test your integration before deploying it to production. This comprehensive guide should give you a solid foundation for building your Stripe and Web2py integration. Good luck!

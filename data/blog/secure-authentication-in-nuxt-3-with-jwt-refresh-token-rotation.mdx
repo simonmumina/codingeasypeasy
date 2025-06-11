@@ -1,0 +1,516 @@
+---
+title: 'Secure Authentication in Nuxt 3 with JWT Refresh Token Rotation'
+date: '2024-10-26'
+lastmod: '2024-10-27'
+tags:
+  [
+    'nuxt3',
+    'jwt',
+    'authentication',
+    'refresh token rotation',
+    'security',
+    'vuejs',
+    'vue',
+    'nuxt',
+    'frontend',
+    'javascript',
+  ]
+draft: false
+summary: 'Implement robust and secure authentication in your Nuxt 3 application using JWT refresh token rotation. Learn how to enhance security by preventing token theft and misuse. This guide provides a step-by-step implementation with code examples.'
+authors: ['default']
+---
+
+# Secure Authentication in Nuxt 3 with JWT Refresh Token Rotation
+
+Authentication is a critical aspect of any web application. JSON Web Tokens (JWTs) are a popular choice for managing user sessions. However, JWTs have a finite lifespan, and if compromised, they can be used until they expire. Refresh token rotation is a security measure designed to mitigate the risks associated with stolen or misused refresh tokens. This blog post guides you through implementing JWT refresh token rotation in your Nuxt 3 application, enhancing its security and resilience.
+
+## What is Refresh Token Rotation?
+
+Refresh token rotation involves generating a new refresh token each time an access token is refreshed. The old refresh token is then invalidated (typically by being revoked on the server-side). This prevents attackers from using a stolen refresh token indefinitely. If a refresh token is compromised, the attacker can only use it once before it's invalidated, limiting the potential damage.
+
+**Why is Refresh Token Rotation Important?**
+
+- **Improved Security:** Significantly reduces the window of opportunity for attackers exploiting stolen refresh tokens.
+- **Reduced Risk:** Limits the impact of a compromised refresh token to a single refresh.
+- **Compliance:** Helps meet security compliance requirements by implementing best practices for token handling.
+
+## Prerequisites
+
+Before we begin, ensure you have the following:
+
+- **Nuxt 3 Project:** A working Nuxt 3 project.
+- **Node.js and npm/yarn/pnpm:** Ensure you have a recent version of Node.js and a package manager installed.
+- **API Backend (Optional):** This guide focuses on the frontend implementation. You'll need a backend API that handles user authentication, JWT generation, and refresh token storage/revocation (e.g., using Node.js with Express.js or any other backend technology).
+- **`js-cookie` (Recommended):** We will use `js-cookie` for securely storing tokens in cookies. Install it using your package manager:
+
+  ```bash
+  npm install js-cookie
+  # or
+  yarn add js-cookie
+  # or
+  pnpm add js-cookie
+  ```
+
+## Implementation Steps
+
+Here's a breakdown of the steps involved in implementing JWT refresh token rotation in your Nuxt 3 application:
+
+1.  **Install necessary packages (if not already done):** `js-cookie`
+2.  **Create a Plugin for Authentication Logic:** This plugin will handle token management, refreshing, and user data.
+3.  **Implement Token Storage:** Store tokens securely in cookies (using `js-cookie`).
+4.  **Implement Token Refreshing Logic:** Handle the refresh token exchange with your backend API.
+5.  **Implement API Request Interceptor:** Automatically attach the access token to outgoing API requests.
+6.  **Handle Token Expiration and User Logout:** Implement mechanisms for handling expired tokens and logging out the user.
+
+### 1. Create an Authentication Plugin (`plugins/auth.ts`)
+
+This plugin will house the core authentication logic.
+
+```typescript
+// plugins/auth.ts
+import { defineNuxtPlugin, useRuntimeConfig } from '#app'
+import Cookies from 'js-cookie'
+import { jwtDecode } from 'jwt-decode'
+
+interface DecodedToken {
+  exp: number
+  [key: string]: any // Allow other properties
+}
+
+export default defineNuxtPlugin(async (nuxtApp) => {
+  const config = useRuntimeConfig()
+  const accessTokenKey = 'access_token'
+  const refreshTokenKey = 'refresh_token'
+  const userKey = 'user'
+
+  const getAccessToken = (): string | null => {
+    return Cookies.get(accessTokenKey) || null
+  }
+
+  const getRefreshToken = (): string | null => {
+    return Cookies.get(refreshTokenKey) || null
+  }
+
+  const setAccessToken = (token: string) => {
+    Cookies.set(accessTokenKey, token, { secure: true, sameSite: 'Strict' }) // Adjust options as needed
+  }
+
+  const setRefreshToken = (token: string) => {
+    Cookies.set(refreshTokenKey, token, { secure: true, sameSite: 'Strict' }) // Adjust options as needed
+  }
+
+  const setUserData = (data: any) => {
+    localStorage.setItem(userKey, JSON.stringify(data))
+  }
+
+  const getUserData = () => {
+    const userData = localStorage.getItem(userKey)
+    return userData ? JSON.parse(userData) : null
+  }
+
+  const clearUserData = () => {
+    localStorage.removeItem(userKey)
+  }
+
+  const clearTokens = () => {
+    Cookies.remove(accessTokenKey)
+    Cookies.remove(refreshTokenKey)
+    clearUserData()
+  }
+
+  const isTokenExpired = (token: string | null): boolean => {
+    if (!token) return true
+    try {
+      const decodedToken = jwtDecode<DecodedToken>(token)
+      const expirationTime = decodedToken.exp * 1000 // Convert seconds to milliseconds
+      return Date.now() >= expirationTime
+    } catch (error) {
+      // Handle invalid token format
+      console.error('Error decoding token:', error)
+      return true // Treat as expired if decoding fails
+    }
+  }
+
+  const refreshAccessToken = async () => {
+    const refreshToken = getRefreshToken()
+
+    if (!refreshToken) {
+      console.warn('No refresh token available.')
+      return false
+    }
+
+    try {
+      const response = await $fetch('/api/refresh', {
+        // Replace with your API endpoint
+        method: 'POST',
+        body: { refreshToken },
+      })
+
+      if (response.accessToken && response.refreshToken) {
+        setAccessToken(response.accessToken)
+        setRefreshToken(response.refreshToken) // Store the *new* refresh token
+        return true
+      } else {
+        console.error('Refresh token request failed:', response)
+        clearTokens() // Clear tokens if refresh fails
+        return false
+      }
+    } catch (error: any) {
+      console.error('Error refreshing token:', error)
+      clearTokens()
+      return false
+    }
+  }
+
+  // Check and refresh token on app startup
+  if (getAccessToken() && isTokenExpired(getAccessToken()) && getRefreshToken()) {
+    await refreshAccessToken()
+  }
+
+  nuxtApp.provide('auth', {
+    getAccessToken,
+    getRefreshToken,
+    setAccessToken,
+    setRefreshToken,
+    clearTokens,
+    refreshAccessToken,
+    isTokenExpired,
+    setUserData,
+    getUserData,
+    clearUserData,
+  })
+})
+```
+
+**Explanation:**
+
+- **`defineNuxtPlugin`:** Defines a Nuxt plugin that runs during the application's initialization.
+- **`accessTokenKey`, `refreshTokenKey`:** Constants for the cookie names.
+- **`getAccessToken`, `getRefreshToken`, `setAccessToken`, `setRefreshToken`:** Functions to manage the tokens in cookies using `js-cookie`. **Important:** The `secure: true` option ensures cookies are only sent over HTTPS, and `sameSite: 'Strict'` provides CSRF protection. Adjust these options based on your specific security requirements.
+- **`clearTokens`:** Removes both tokens from the cookies.
+- **`isTokenExpired`:** Decodes the JWT using `jwt-decode` and checks if it has expired. Handles potential errors during decoding (important for security).
+- **`refreshAccessToken`:** Sends a request to your backend API's `/api/refresh` endpoint (replace with your actual endpoint) to exchange the refresh token for a new access token and a **new** refresh token. This is the core of refresh token rotation. Critically, the new refresh token is stored.
+- **Initial Refresh Check:** On app startup, the plugin checks if the access token exists and is expired. If so, and a refresh token exists, it attempts to refresh the token. This ensures a seamless user experience.
+- **`nuxtApp.provide`:** Makes the authentication functions available throughout your Nuxt application via the `useNuxtApp().$auth` object.
+
+### 2. API Request Interceptor (`plugins/api-interceptor.ts`)
+
+This plugin intercepts API requests and adds the access token to the `Authorization` header. This assumes you are using `useFetch` or `useAsyncData` for your API requests.
+
+```typescript
+// plugins/api-interceptor.ts
+import { defineNuxtPlugin, useNuxtApp } from '#app'
+
+export default defineNuxtPlugin(() => {
+  const nuxtApp = useNuxtApp()
+  const { $auth } = nuxtApp
+
+  nuxtApp.hook('app:mounted', () => {
+    globalThis.addEventListener('unhandledrejection', async (event) => {
+      if (event.reason instanceof Error && event.reason.message === 'Token expired') {
+        console.log('Token expired, attempting to refresh')
+        const refreshed = await $auth.refreshAccessToken()
+        if (refreshed) {
+          // Re-fetch the original request with the new token.
+          // You'll need to store the original request details somehow.
+          // A simplified example (replace with your actual logic):
+          console.log('token refreshed - re-fetching')
+
+          // Store the request details (e.g., URL, method, body) temporarily
+          const originalRequest = (event.reason as any).originalRequest
+          if (originalRequest) {
+            // Re-fetch the data (adapt this to your actual data fetching method)
+            try {
+              const response = await $fetch(originalRequest.url, originalRequest.options)
+              console.log('re-fetched data:', response)
+              // Handle the refetched data as needed
+            } catch (refetchError) {
+              console.error('Error re-fetching data after token refresh:', refetchError)
+              // Redirect to login or handle the error appropriately
+              navigateTo('/login')
+            }
+          } else {
+            console.warn('Original request details not available for re-fetching.')
+            // Redirect to login or handle the error appropriately
+            navigateTo('/login')
+          }
+        } else {
+          console.log('Token refresh failed, redirecting to login')
+          navigateTo('/login')
+        }
+        event.preventDefault() // Prevent the unhandled rejection from propagating further
+      }
+    })
+  })
+
+  nuxtApp.hook('vue:setup', () => {
+    globalThis.addEventListener('fetch:before', (event) => {
+      const accessToken = $auth.getAccessToken()
+
+      if (accessToken) {
+        event.request.headers.set('Authorization', `Bearer ${accessToken}`)
+      }
+    })
+
+    globalThis.addEventListener('fetch:error', (event) => {
+      if (
+        (event.error && event.error.message && event.error.message.includes('401')) ||
+        (event.error && event.error.message && event.error.message.includes('Unauthorized'))
+      ) {
+        // Check if the error is due to an expired token (adapt the condition to your backend's error response)
+        console.log('error message:', event.error.message)
+        if ($auth.isTokenExpired($auth.getAccessToken())) {
+          event.preventDefault() // Prevent default error handling
+          event.error.message = 'Token expired' // custom error message
+          ;(event.error as any).originalRequest = {
+            // Store the original request
+            url: event.request.url,
+            options: {
+              method: event.request.method,
+              body: event.request.body, // Be mindful of the body type
+              headers: {},
+            },
+          }
+
+          event.reject(event.error) // Reject the promise with the modified error
+        } else {
+          console.warn('Unauthorized access, but token is not expired.  Possible permission issue.')
+          $auth.clearTokens()
+          navigateTo('/login')
+        }
+      }
+    })
+  })
+})
+```
+
+**Explanation:**
+
+- **`nuxtApp.hook('vue:setup')`:** Hooks into the Vue setup lifecycle to register event listeners.
+- **`fetch:before` event listener:** This event is triggered before each `fetch` request. It retrieves the access token from the authentication plugin and adds it to the `Authorization` header.
+- **`fetch:error` event listener:** This event is triggered when a `fetch` request fails. It checks if the error is due to an expired token (you might need to adjust the condition based on your backend's error response). If the token is expired, it prevents default error handling, sets a custom error message 'Token expired', stores the original request (URL and options) on the error object, rejects the fetch promise to be handled in the `unhandledrejection` event handler
+- **`unhandledrejection` event listener:** This event is triggered when a Promise rejection is not handled. The code checks if the unhandled rejection is due to `Token expired` error. If so, attempt to refresh the token. If the token refresh is successful, re-fetch the original API request. If the refresh fails, or if the original request details aren't available, redirect the user to the login page. **Important:** You'll need to adapt the re-fetching logic to your specific data fetching method (e.g., using `useFetch` or `useAsyncData`).
+- **Error Handling:** If the refresh token rotation fails, the user is redirected to the login page.
+- **Original Request Storage:** It stores the original request details in the error object. The `options.body` might need special handling depending on the type of data being sent in the request.
+
+**Important Considerations for the Interceptor:**
+
+- **Backend Error Responses:** Ensure your backend returns consistent error responses that allow you to reliably identify expired tokens. Use specific HTTP status codes (e.g., 401 Unauthorized with a specific error code in the response body).
+- **Request Body Handling:** When re-fetching, the `options.body` might need to be serialized again (e.g., using `JSON.stringify`) depending on how you originally sent the data.
+- **Recursive Refreshing:** Avoid potential infinite loops. The error handler only attempt to refresh the token once. Implement a retry mechanism with a maximum number of retries if necessary.
+- **Non-API Requests:** You might need to exclude certain requests (e.g., requests to external services that don't require authentication) from the interceptor.
+
+### 3. Nuxt Configuration (`nuxt.config.ts`)
+
+Add the plugins to your `nuxt.config.ts` file:
+
+```typescript
+// nuxt.config.ts
+export default defineNuxtConfig({
+  modules: [],
+  plugins: [
+    { src: '~/plugins/auth.ts', mode: 'client' },
+    { src: '~/plugins/api-interceptor.ts', mode: 'client' },
+  ],
+  runtimeConfig: {
+    public: {
+      apiBaseUrl: process.env.API_BASE_URL || 'http://localhost:3001/api',
+    },
+  },
+  ssr: false, // Disable SSR
+  vite: {
+    define: {
+      'process.env.API_BASE_URL': JSON.stringify(process.env.API_BASE_URL),
+    },
+  },
+})
+```
+
+**Explanation:**
+
+- **`plugins`:** Registers the `auth.ts` and `api-interceptor.ts` plugins. `mode: 'client'` ensures that these plugins only run on the client-side.
+- **`runtimeConfig`:** Provides a way to configure your application at runtime. The `public` section makes the `apiBaseUrl` available on the client-side.
+- **`ssr: false`:** disable server side rendering as `js-cookie` is not supported by server side rendering.
+
+### 4. Example Usage in a Component
+
+Now, let's use the authentication plugin in a component:
+
+```plaintext
+// pages/profile.vue
+<template>
+  <div>
+    <h1>Profile Page</h1>
+    <p v-if="user">Welcome, {{ user.username }}!</p>
+    <p v-else>Loading user data...</p>
+    <button @click="logout">Logout</button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useNuxtApp } from '#app';
+import { ref, onMounted } from 'vue';
+import { navigateTo } from '#app';
+
+const nuxtApp = useNuxtApp();
+const { $auth } = nuxtApp;
+
+const user = ref(null);
+
+onMounted(async () => {
+  // Simulate fetching user data from the API
+  try {
+    const userData = await $fetch('/api/profile', {
+      method: 'GET',
+    });
+    user.value = userData;
+    $auth.setUserData(userData);
+  } catch (error) {
+    console.error('Failed to fetch user data:', error);
+    // Handle error appropriately, e.g., redirect to login
+    navigateTo('/login');
+  }
+});
+
+const logout = () => {
+  $auth.clearTokens();
+  navigateTo('/login');
+};
+</script>
+```
+
+**Explanation:**
+
+- **`useNuxtApp`:** Gets access to the Nuxt application instance.
+- **`$auth`:** Accesses the authentication functions provided by the plugin.
+- **`onMounted`:** Fetches user data from the API when the component is mounted.
+- **`logout`:** Logs the user out by clearing the tokens and redirecting to the login page.
+
+## Backend Implementation (Simplified Example - Node.js with Express.js)
+
+This is a simplified example of how your backend API might handle refresh token rotation. **This is not production-ready code and requires significant security hardening.**
+
+```javascript
+// backend (Node.js with Express.js)
+const express = require('express')
+const jwt = require('jsonwebtoken')
+const bcrypt = require('bcrypt')
+const app = express()
+const port = 3001
+
+app.use(express.json())
+
+// Replace with a database or secure storage
+let refreshTokens = []
+
+// Generate Access Token
+const generateAccessToken = (user) => {
+  return jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '15m' }) // Short lifespan
+}
+
+// Generate Refresh Token
+const generateRefreshToken = (user) => {
+  return jwt.sign(user, process.env.REFRESH_TOKEN_SECRET) // Long lifespan
+}
+
+// In-memory user storage
+const users = [{ id: 1, username: 'testuser', password: 'password' }] // Please use bcrypt and a real database
+
+app.post('/login', async (req, res) => {
+  const { username, password } = req.body
+
+  const user = users.find((u) => u.username === username)
+  if (!user) {
+    return res.status(400).send('Cannot find user')
+  }
+  if (user.password !== password) {
+    return res.status(401).send('Incorrect password')
+  }
+
+  const accessToken = generateAccessToken({ username: user.username })
+  const refreshToken = generateRefreshToken({ username: user.username })
+
+  refreshTokens.push(refreshToken) // Store the refresh token (in a database in production)
+
+  res.json({ accessToken: accessToken, refreshToken: refreshToken })
+})
+
+app.post('/refresh', (req, res) => {
+  const refreshToken = req.body.refreshToken
+
+  if (!refreshToken) {
+    return res.sendStatus(401)
+  }
+
+  if (!refreshTokens.includes(refreshToken)) {
+    return res.sendStatus(403) // Token not valid
+  }
+
+  jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET, (err, user) => {
+    if (err) {
+      return res.sendStatus(403)
+    }
+
+    // Invalidate the old refresh token by removing it
+    refreshTokens = refreshTokens.filter((token) => token !== refreshToken)
+
+    const accessToken = generateAccessToken({ username: user.username })
+    const newRefreshToken = generateRefreshToken({ username: user.username })
+
+    refreshTokens.push(newRefreshToken) // Store the *new* refresh token (in a database)
+
+    res.json({ accessToken: accessToken, refreshToken: newRefreshToken })
+  })
+})
+
+app.delete('/logout', (req, res) => {
+  const refreshToken = req.body.refreshToken
+  refreshTokens = refreshTokens.filter((token) => token !== refreshToken)
+  res.sendStatus(204)
+})
+
+app.get('/api/profile', authenticateToken, (req, res) => {
+  res.json({ username: req.user.username, id: 123 })
+})
+
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization']
+  const token = authHeader && authHeader.split(' ')[1]
+  if (token == null) return res.sendStatus(401)
+
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, user) => {
+    if (err) return res.sendStatus(403)
+    req.user = user
+    next()
+  })
+}
+
+app.listen(port, () => {
+  console.log(`Server listening at http://localhost:${port}`)
+})
+```
+
+**Key points about the backend:**
+
+- **Token Generation:** Generates both access and refresh tokens. Access tokens should have a short lifespan. Refresh tokens can have a longer lifespan but should eventually expire or be explicitly revoked.
+- **Refresh Token Storage:** Stores refresh tokens in a database (in this simplified example, it's an array, which is **not suitable for production**). The association between the refresh token and the user is crucial.
+- **Refresh Token Validation:** Verifies that the refresh token is valid, has not been revoked, and belongs to the user.
+- **Refresh Token Rotation:** Upon successful refresh, **invalidates the old refresh token** and generates a **new** refresh token, storing the new token. This is the heart of refresh token rotation.
+- **Logout:** Removes the refresh token from the database when the user logs out.
+- **Security:** Use `bcrypt` to hash passwords, use environment variables for secrets, and validate all input data.
+- **`authenticateToken`:** A middleware function that authenticates the JWT.
+
+## Production Considerations
+
+- **Secure Storage:** Store refresh tokens securely in a database (e.g., PostgreSQL, MySQL, MongoDB) with encryption at rest. Associate each refresh token with a specific user and potentially device/session.
+- **Revocation Lists:** Maintain a revocation list of compromised or expired refresh tokens. Check against this list during refresh token validation.
+- **Token Expiry:** Set reasonable expiration times for both access and refresh tokens. Implement a mechanism for revoking refresh tokens (e.g., when a user changes their password).
+- **Auditing:** Log all authentication-related events, including token issuance, refresh, and revocation, for security auditing and monitoring.
+- **Rate Limiting:** Implement rate limiting on the `/refresh` endpoint to prevent abuse.
+- **CSRF Protection:** Protect against Cross-Site Request Forgery (CSRF) attacks. Use the `sameSite: 'Strict'` option for cookies.
+- **XSS Protection:** Protect against Cross-Site Scripting (XSS) attacks. Sanitize all user input.
+- **HTTPS:** Always use HTTPS to protect sensitive data in transit.
+
+## Conclusion
+
+Implementing JWT refresh token rotation in your Nuxt 3 application significantly enhances its security posture. By rotating refresh tokens, you limit the impact of compromised tokens and improve the overall resilience of your authentication system. Remember to follow security best practices and adapt the implementation to your specific needs. This comprehensive guide provides a strong foundation for building a secure authentication system in your Nuxt 3 application.

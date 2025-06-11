@@ -1,0 +1,377 @@
+---
+title: 'JWT Authentication in Web2py: Secure Your Applications with Token-Based Authentication'
+date: '2024-01-26'
+lastmod: '2024-01-27'
+tags: ['web2py', 'jwt', 'authentication', 'security', 'python', 'token-based authentication']
+draft: false
+summary: 'Learn how to implement JWT (JSON Web Token) authentication in Web2py for secure and scalable web applications. This comprehensive guide covers everything from installation to advanced configurations with practical code examples.'
+authors: ['default']
+---
+
+# JWT Authentication in Web2py: Secure Your Applications with Token-Based Authentication
+
+This blog post provides a comprehensive guide on implementing JSON Web Token (JWT) authentication in Web2py, a full-stack Python web framework. JWT is a popular method for securely authenticating users and managing authorization in web applications. It's especially useful for building APIs and applications that require a stateless authentication mechanism.
+
+## What is JWT Authentication?
+
+JWT (JSON Web Token) is an open standard (RFC 7519) that defines a compact and self-contained way for securely transmitting information between parties as a JSON object. This information can be verified and trusted because it is digitally signed. JWTs can be signed using a secret (with the HMAC algorithm) or a public/private key pair using RSA or ECDSA.
+
+**Key benefits of using JWT:**
+
+- **Stateless:** The server doesn't need to maintain session information, improving scalability.
+- **Scalable:** Since authentication data is self-contained within the token, JWTs are easily scalable across multiple servers.
+- **Secure:** JWTs are digitally signed, making them tamper-proof and ensuring data integrity.
+- **Cross-Domain Authentication:** JWTs are easily used for cross-domain authentication and authorization.
+
+## Prerequisites
+
+Before we begin, make sure you have the following:
+
+- **Web2py installed:** If you don't have Web2py installed, you can download it from the official Web2py website ([http://www.web2py.com/](http://www.web2py.com/)).
+- **Basic understanding of Web2py:** Familiarity with Web2py controllers, models, views, and the database abstraction layer (DAL) is helpful.
+- **Python 3.6+:** Web2py is compatible with Python 2.7 and 3.6+, but it's recommended to use Python 3.6 or later.
+- **PyJWT Library:** We'll use the `PyJWT` library to encode and decode JWTs. Install it using pip:
+
+  ```bash
+  pip install PyJWT
+  ```
+
+## Implementation Steps
+
+Let's walk through the process of implementing JWT authentication in Web2py.
+
+### 1. Project Setup
+
+Create a new Web2py application (if you don't already have one):
+
+```bash
+python web2py.py -c myapp
+```
+
+Replace `myapp` with your desired application name. Then, navigate to the application directory:
+
+```bash
+cd applications/myapp
+```
+
+### 2. Define the Database Model (models/db.py)
+
+We need to define a database table to store user information (username, password, etc.). Modify the `models/db.py` file as follows:
+
+```plaintext
+db = DAL('sqlite://storage.sqlite', migrate=True)
+
+auth = Auth(db)
+auth.define_tables(username=True, signature=False)
+
+# Customize auth settings (optional)
+auth.settings.registration_requires_verification = False  # Set to True for email verification
+auth.settings.login_requires_verification = False # Set to True for email verification
+auth.settings.remember_me_days = 7
+
+# Define a User model if you don't want to use the auth default
+# db.define_table('user',
+#     Field('username', 'string', unique=True, requires=IS_NOT_EMPTY()),
+#     Field('password', 'password', requires=CRYPT()),
+#     Field('email', 'string', requires=IS_EMAIL()),
+#     format='%(username)s'
+# )
+
+db.commit()
+```
+
+This code defines a database table named `auth_user` using Web2py's built-in `Auth` object. We enable username-based authentication. You can customize the authentication settings according to your needs. The commented out section is a way to define a completely separate user table, rather than using the `auth_user` table which is recommended, for simpler applications.
+
+### 3. Create a Configuration File (modules/jwt_config.py)
+
+Create a new file named `modules/jwt_config.py` to store your JWT configuration settings:
+
+```plaintext
+import os
+
+JWT_SECRET = os.environ.get("JWT_SECRET", "your-secret-key")  # Replace with a strong, random key. Store in ENV VAR.
+JWT_ALGORITHM = "HS256"  # HMAC SHA-256
+JWT_EXPIRATION_TIME = 3600  # Token expiration time in seconds (1 hour)
+```
+
+**Important:**
+
+- **`JWT_SECRET`:** **Replace `"your-secret-key"` with a strong, randomly generated secret key.** Ideally, store this key in an environment variable for security reasons. Using `os.environ.get` allows you to retrieve the secret key from the environment.
+- **`JWT_ALGORITHM`:** This specifies the algorithm used to sign the JWT. `"HS256"` (HMAC SHA-256) is a commonly used algorithm, but you can choose others (e.g., `"RS256"`) if you prefer.
+- **`JWT_EXPIRATION_TIME`:** This determines how long the JWT will be valid (in seconds). Adjust this value based on your application's security requirements. A shorter expiration time increases security but may require users to re-authenticate more frequently.
+
+### 4. Create a JWT Helper Module (modules/jwt_helper.py)
+
+Create a file named `modules/jwt_helper.py` to encapsulate the JWT encoding and decoding logic:
+
+```plaintext
+import jwt
+from datetime import datetime, timedelta
+from .jwt_config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRATION_TIME
+
+def generate_token(user_id):
+    """Generates a JWT token for the given user ID."""
+    payload = {
+        'user_id': user_id,
+        'exp': datetime.utcnow() + timedelta(seconds=JWT_EXPIRATION_TIME)
+    }
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return token
+
+def decode_token(token):
+    """Decodes a JWT token and returns the payload."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None  # Token has expired
+    except jwt.InvalidTokenError:
+        return None  # Token is invalid
+```
+
+This module defines two key functions:
+
+- **`generate_token(user_id)`:** This function takes a user ID as input and creates a JWT token. The token's payload includes the user ID and an expiration timestamp.
+- **`decode_token(token)`:** This function takes a JWT token as input and decodes it. It verifies the token's signature and expiration time. If the token is valid, it returns the payload. If the token is expired or invalid, it returns `None`.
+
+### 5. Implement Login and Registration (controllers/default.py)
+
+Modify the `controllers/default.py` file to handle user login and registration, and to generate and return JWTs upon successful authentication:
+
+```plaintext
+from py4web import action, URL, HTTP, Field, abort
+from py4web.utils.form import Form, FormStyleBulma
+from yatl.helpers import A, SPAN, UL, LI
+from .common import db, session, T, cache, auth, logger, authenticated, unauthenticated, flash
+from py4web.utils.url_signer import URLSigner
+from .models import get_user_email
+from .jwt_helper import generate_token
+
+url_signer = URLSigner(session)
+
+@action('index')
+@action.uses(db, auth, session, T, 'index.html')
+def index():
+    user = auth.get_user()
+    message = T("Hello {first_name} {last_name}!".format(**user) if user else "Hello World!")
+    return dict(message=message, url_signer=url_signer)
+
+@action('login', method=['GET', 'POST'])
+@action.uses(session, T, db, auth.login, 'login.html')
+def login():
+    if auth.user:
+        redirect(URL('index'))
+    return dict(form=auth.login_form)
+
+
+@action('register', method=['GET', 'POST'])
+@action.uses(session, T, db, auth.register, 'register.html')
+def register():
+    if auth.user:
+        redirect(URL('index'))
+    return dict(form=auth.register_form)
+
+@action('logout')
+@action.uses(session, auth.logout, redirect)
+def logout():
+    redirect(URL('index'))
+
+@action('api/login', method=['POST'])
+@action.uses(db, auth)
+def api_login():
+    username = request.json.get('username')
+    password = request.json.get('password')
+
+    if not username or not password:
+        raise HTTP(400, {'error': 'Username and password are required.'})
+
+    user = db(db.auth_user.username == username).select().first()
+
+    if not user:
+        raise HTTP(401, {'error': 'Invalid username or password.'})
+
+    if not auth.verify_password(password, user.password):
+        raise HTTP(401, {'error': 'Invalid username or password.'})
+
+    token = generate_token(user.id)  # Generate JWT token
+    return {'token': token}
+
+
+@action('api/register', method=['POST'])
+@action.uses(db, auth)
+def api_register():
+    username = request.json.get('username')
+    password = request.json.get('password')
+    email = request.json.get('email')
+
+    if not username or not password or not email:
+        raise HTTP(400, {'error': 'Username, password, and email are required.'})
+
+    if db(db.auth_user.username == username).count() > 0:
+         raise HTTP(400, {'error': 'Username already exists.'})
+
+    if db(db.auth_user.email == email).count() > 0:
+         raise HTTP(400, {'error': 'Email already exists.'})
+
+
+    user_id = auth.register(username=username, password=password, email=email) # This returns False or the user ID. If it fails (e.g., username exists), it will be False
+
+    if not user_id:
+        raise HTTP(500, {'error': 'Registration failed.'})  # Or handle more specific errors from auth.register
+
+    user = db(db.auth_user.id == user_id).select().first() # Need to retrieve the user again to get all info.
+
+    token = generate_token(user.id)  # Generate JWT token
+    return {'token': token}
+
+
+
+@action('api/protected')
+@action.uses(db, session)
+def api_protected():
+    """An example API endpoint that requires authentication."""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        raise HTTP(401, {'error': 'Authorization header is missing.'})
+
+    try:
+        token = auth_header.split(' ')[1]  # Extract token from "Bearer <token>"
+    except IndexError:
+        raise HTTP(400, {'error': 'Invalid authorization header format.'})
+
+    from .jwt_helper import decode_token # Import here to avoid circular import issues during startup
+    payload = decode_token(token)
+
+    if not payload:
+        raise HTTP(401, {'error': 'Invalid or expired token.'})
+
+    user_id = payload.get('user_id')
+
+    user = db(db.auth_user.id == user_id).select().first()  # Verify user id exists.
+
+    if not user:
+        raise HTTP(401, {'error': 'Invalid user associated with token.'})
+
+
+
+    return {'message': f'Hello, {user.username}! This is a protected resource.'}
+```
+
+Key changes:
+
+- **`/api/login` endpoint:** This endpoint receives a username and password, authenticates the user using Web2py's built-in `auth.verify_password()` function, and generates a JWT token using the `generate_token()` function from `jwt_helper.py`. It then returns the token in the response.
+
+- **`/api/register` endpoint:** This endpoint receives a username, password, and email, registers the user and generates JWT token after successful registration.
+
+- **`/api/protected` endpoint:** This is an example protected API endpoint. It extracts the JWT token from the `Authorization` header, decodes it using the `decode_token()` function, and verifies that the token is valid. If the token is valid, it retrieves the user ID from the payload and returns a protected resource.
+
+### 6. Create the Views (views/default/login.html, views/default/register.html, views/default/index.html)
+
+You'll need to create HTML views for login, registration, and the index page. Web2py comes with its own templating engine (YATL). Create them like so, or modify the existing ones.
+
+**views/default/login.html:**
+
+```html
+{{ extend 'layout.html' }}
+<h1>Login</h1>
+{{= form }}
+```
+
+**views/default/register.html:**
+
+```html
+{{ extend 'layout.html' }}
+<h1>Register</h1>
+{{= form }}
+```
+
+**views/default/index.html:**
+
+```html
+{{ extend 'layout.html' }}
+<h1>Welcome</h1>
+<p>{{=message}}</p>
+```
+
+The `layout.html` is provided by Web2py when creating an app.
+
+### 7. Test the API
+
+You can now test the API using a tool like Postman or `curl`.
+
+**Registration:**
+
+Send a `POST` request to `/api/register` with the following JSON body:
+
+```json
+{
+  "username": "testuser",
+  "password": "password123",
+  "email": "test@example.com"
+}
+```
+
+The response should contain a JWT token:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE2NzQ4NzAxNjJ9.dQ4yY6fB4jX9dF4jX9dF4jX9dF4jX9dF4jX9dF4jX9"
+}
+```
+
+**Login:**
+
+Send a `POST` request to `/api/login` with the following JSON body:
+
+```json
+{
+  "username": "testuser",
+  "password": "password123"
+}
+```
+
+The response should contain a JWT token:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE2NzQ4NzAxNjJ9.dQ4yY6fB4jX9dF4jX9dF4jX9dF4jX9dF4jX9dF4jX9"
+}
+```
+
+**Accessing the Protected Resource:**
+
+Send a `GET` request to `/api/protected` with the following `Authorization` header:
+
+```
+Authorization: Bearer <your_jwt_token>
+```
+
+Replace `<your_jwt_token>` with the token you received from the login or registration endpoint. The response should be:
+
+```json
+{
+  "message": "Hello, testuser! This is a protected resource."
+}
+```
+
+If you omit the `Authorization` header or provide an invalid token, you should receive a `401 Unauthorized` error.
+
+## Security Considerations
+
+- **Keep your `JWT_SECRET` secret:** This is the most important security measure. Store it securely (e.g., in an environment variable) and never commit it to your code repository.
+- **Use HTTPS:** Always use HTTPS to protect JWTs from being intercepted during transmission.
+- **Use a strong `JWT_SECRET`:** A weak secret key can be easily cracked, compromising the security of your tokens.
+- **Implement token expiration:** Set a reasonable expiration time for your JWTs to limit the damage if a token is compromised.
+- **Consider token revocation:** In some cases, you may need to revoke a JWT before it expires (e.g., if a user's account is compromised). You can implement a token blacklist or use refresh tokens to manage token revocation.
+- **Protect against Cross-Site Scripting (XSS):** JWTs are typically stored in local storage or cookies. Mitigate XSS risks by using HTTP-only cookies or carefully sanitizing user input to prevent malicious scripts from injecting code that could steal tokens.
+
+## Advanced Configurations
+
+- **Refresh Tokens:** Implement refresh tokens to allow users to remain logged in for longer periods without having to re-enter their credentials. A refresh token is used to obtain a new access token when the current access token expires.
+- **Role-Based Access Control (RBAC):** Include user roles or permissions in the JWT payload to implement fine-grained access control. You can then use these roles to determine whether a user is authorized to access specific resources.
+- **Custom Claims:** Add additional custom claims to the JWT payload to store user-specific information or application-specific data.
+- **Key Rotation:** Periodically rotate your `JWT_SECRET` to further enhance security.
+
+## Conclusion
+
+This guide provided a detailed walkthrough of implementing JWT authentication in Web2py. By using JWTs, you can build secure, scalable, and stateless web applications. Remember to follow security best practices to protect your tokens and your users' data.

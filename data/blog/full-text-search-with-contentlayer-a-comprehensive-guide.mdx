@@ -1,0 +1,594 @@
+---
+title: 'Full-Text Search with Contentlayer: A Comprehensive Guide'
+date: '2024-01-01'
+lastmod: '2024-10-26'
+tags: ['contentlayer', 'full-text search', 'nextjs', 'search', 'fuse.js', 'lunr.js']
+draft: false
+summary: 'Learn how to implement blazing-fast full-text search in your Contentlayer-powered Next.js website using various techniques and libraries. This guide covers everything from basic indexing to advanced search optimization.'
+authors: ['default']
+---
+
+# Full-Text Search with Contentlayer: A Comprehensive Guide
+
+Building a content-rich website with Contentlayer offers a fantastic developer experience. However, a key feature often required is robust full-text search.  Users expect to quickly find the information they need, regardless of where it lives on your site.  This comprehensive guide explores several ways to implement full-text search in your Contentlayer project, outlining the pros and cons of each approach and providing practical code examples.
+
+## Why Full-Text Search Matters
+
+Traditional search methods, like relying on pre-defined categories and tags, can fall short. Full-text search examines the *content* of your documents, enabling users to find information based on specific keywords and phrases, even if those terms aren't explicitly included in metadata. This leads to:
+
+*   **Improved User Experience:** Users find what they're looking for faster and more efficiently.
+*   **Increased Engagement:** Users are more likely to explore your content if they can easily find relevant information.
+*   **Better SEO:** Search engines can better understand your content and rank it accordingly.
+
+## Choosing the Right Approach
+
+Several options are available for implementing full-text search with Contentlayer.  The best choice depends on your specific needs, the size of your content, and your performance requirements.  We'll explore three popular methods:
+
+1.  **Fuse.js (Client-Side):**  A lightweight, fuzzy-search library ideal for smaller websites with limited content.
+2.  **Lunr.js (Client-Side):** A more robust client-side option, suitable for medium-sized websites needing more advanced search capabilities.
+3.  **External Search Service (Server-Side):** For larger, high-traffic websites, leveraging a dedicated search service like Algolia, ElasticSearch, or Meilisearch provides scalability and performance.
+
+## 1. Implementing Full-Text Search with Fuse.js
+
+Fuse.js is a powerful, yet lightweight, fuzzy-search library.  It excels at handling typos and variations in search terms, making it a great choice for smaller content sites.  It works entirely on the client-side, so there's no need for a backend API.
+
+**Steps:**
+
+1.  **Install Fuse.js:**
+
+    ```bash
+    npm install fuse.js
+    ```
+
+2.  **Create a Search Index:**
+
+    In your Contentlayer configuration (usually `contentlayer.config.js` or `contentlayer.config.ts`), add a computed field to your document type to create a search index:
+
+    ```typescript jsx
+    // contentlayer.config.ts
+    import { defineDocumentType, makeSource } from 'contentlayer/source-files'
+    import { remark } from 'remark'
+    import remarkRehype from 'remark-rehype'
+    import rehypeStringify from 'rehype-stringify'
+
+    export const Post = defineDocumentType(() => ({
+      name: 'Post',
+      filePathPattern: `**/*.mdx`,
+      contentType: 'mdx',
+      fields: {
+        title: { type: 'string', required: true },
+        date: { type: 'date', required: true },
+        lastmod: { type: 'date' },
+        tags: { type: 'list', of: { type: 'string' } },
+        draft: { type: 'boolean', default: false },
+        summary: { type: 'string' },
+        authors: { type: 'list', of: { type: 'string' }, required: true },
+      },
+      computedFields: {
+        url: {
+          type: 'string',
+          resolve: (doc) => `/blog/${doc._raw.flattenedPath}`,
+        },
+        searchIndex: {
+          type: 'string',
+          resolve: async (doc) => {
+            // Use remark to extract plain text from MDX content
+            const result = await remark()
+              .use(remarkRehype)
+              .use(rehypeStringify)
+              .process(doc.body.raw)
+
+            return result.toString();
+          },
+        },
+      },
+    }))
+
+    export default makeSource({
+      contentDirPath: 'content',
+      documentTypes: [Post],
+    })
+    ```
+
+    **Explanation:**
+
+    *   We're adding a `searchIndex` computed field to the `Post` document type.
+    *   The `resolve` function extracts the plain text content from the MDX body using `remark`, `remarkRehype`, and `rehypeStringify`. This converts the MDX to HTML and then back to a plain string, stripping out the MDX syntax.  Critically, this *extracts the text for searching*.  If you skip this step, your search results will be full of MDX code.
+    *   The extracted text is stored in the `searchIndex` field.
+
+3.  **Create a Search Component:**
+
+    Create a component to handle the search input and display results.
+
+    ```jsx
+    // components/Search.jsx
+    import { useState, useEffect } from 'react';
+    import Fuse from 'fuse.js';
+    import Link from 'next/link';
+    import { useMDXComponent } from 'next-contentlayer/hooks'; // Import useMDXComponent
+
+    const Search = ({ documents }) => {
+      const [searchTerm, setSearchTerm] = useState('');
+      const [searchResults, setSearchResults] = useState([]);
+
+      useEffect(() => {
+        if (!searchTerm) {
+          setSearchResults([]);
+          return;
+        }
+
+        const options = {
+          keys: ['title', 'summary', 'searchIndex'], // Searchable fields
+          includeScore: true, // Include score for ranking
+          threshold: 0.3, // Adjust for fuzzy matching
+        };
+
+        const fuse = new Fuse(documents, options);
+        const results = fuse.search(searchTerm);
+        setSearchResults(results);
+      }, [searchTerm, documents]);
+
+      return (
+        <div>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+
+          <ul>
+            {searchResults.map((result) => (
+              <li key={result.item._id}>
+                <Link href={result.item.url}>
+                  <a>
+                    {result.item.title}
+                    <p>{result.item.summary}</p>
+                  </a>
+                </Link>
+              </li>
+            ))}
+            {searchResults.length === 0 && searchTerm && <li>No results found.</li>}
+          </ul>
+        </div>
+      );
+    };
+
+    export default Search;
+    ```
+
+    **Explanation:**
+
+    *   We import `useState` and `useEffect` hooks for managing the search term and results.
+    *   We initialize Fuse.js with the `documents` array (your Contentlayer data) and define the `options` for the search.
+    *   The `keys` array specifies which fields to search within each document.  Crucially, we include `searchIndex`.
+    *   `includeScore` allows us to rank the search results based on relevance.
+    *   `threshold` controls the fuzziness of the search. Adjust this value to fine-tune the search behavior. A lower value means more fuzzy matching (more results, potentially less relevant).
+    *   The `fuse.search(searchTerm)` method performs the actual search and returns an array of results.
+    *   The results are then displayed in a list, with links to the corresponding pages.  Note the access to `result.item` is how you get the original document data.
+
+4.  **Integrate the Search Component:**
+
+    Import the `Search` component into your page and pass the `allPosts` data from Contentlayer.
+
+    ```jsx
+    // pages/index.jsx
+    import { allPosts } from 'contentlayer/generated';
+    import Search from '../components/Search';
+
+    export default function Home() {
+      return (
+        <div>
+          <Search documents={allPosts} />
+          {/* Your other content */}
+        </div>
+      );
+    }
+    ```
+
+**Pros of Fuse.js:**
+
+*   **Easy to implement:**  Simple API and minimal setup.
+*   **Fuzzy search:** Tolerant of typos and variations in search terms.
+*   **Client-side:** No backend required, reducing complexity.
+
+**Cons of Fuse.js:**
+
+*   **Performance:** Can be slow with large datasets as the search happens in the browser.
+*   **Security:** All data is exposed to the client, which might be a concern for sensitive information.
+*   **Limited features:**  Doesn't support advanced search features like stemming or faceting.
+
+## 2. Implementing Full-Text Search with Lunr.js
+
+Lunr.js is another client-side search library, but it offers more advanced features compared to Fuse.js, such as stemming and stop word removal.  This makes it suitable for medium-sized websites.
+
+**Steps:**
+
+1.  **Install Lunr.js:**
+
+    ```bash
+    npm install lunr
+    ```
+
+2.  **Create a Search Index (Server-Side):**
+
+    Unlike Fuse.js, Lunr.js benefits from pre-building the index on the server side and shipping it to the client. This can significantly improve initial search performance. We'll do this within our Contentlayer config:
+
+    ```typescript jsx
+    // contentlayer.config.ts
+    import { defineDocumentType, makeSource } from 'contentlayer/source-files'
+    import { remark } from 'remark'
+    import remarkRehype from 'remark-rehype'
+    import rehypeStringify from 'rehype-stringify'
+    import lunr from 'lunr'
+    import fs from 'fs/promises';
+    import path from 'path';
+
+    export const Post = defineDocumentType(() => ({
+      name: 'Post',
+      filePathPattern: `**/*.mdx`,
+      contentType: 'mdx',
+      fields: {
+        title: { type: 'string', required: true },
+        date: { type: 'date', required: true },
+        lastmod: { type: 'date' },
+        tags: { type: 'list', of: { type: 'string' } },
+        draft: { type: 'boolean', default: false },
+        summary: { type: 'string' },
+        authors: { type: 'list', of: { type: 'string' }, required: true },
+      },
+      computedFields: {
+        url: {
+          type: 'string',
+          resolve: (doc) => `/blog/${doc._raw.flattenedPath}`,
+        },
+        searchIndex: {
+          type: 'string',
+          resolve: async (doc) => {
+            // Use remark to extract plain text from MDX content
+            const result = await remark()
+              .use(remarkRehype)
+              .use(rehypeStringify)
+              .process(doc.body.raw)
+
+            return result.toString();
+          },
+        },
+      },
+    }))
+
+    const buildLunrIndex = async (allPosts) => {
+      const documents = allPosts.map(post => ({
+        id: post._id,
+        title: post.title,
+        summary: post.summary,
+        body: post.searchIndex
+      }));
+
+      const idx = lunr(function() {
+        this.ref('id')
+        this.field('title')
+        this.field('summary')
+        this.field('body')
+
+        documents.forEach(function (doc) {
+          this.add(doc)
+        }, this)
+      });
+
+      // Serialize the index to JSON
+      const serializedIndex = JSON.stringify(idx);
+
+      // Write the index to a file
+      const publicDir = path.join(process.cwd(), 'public'); // Assuming 'public' directory exists
+      const indexPath = path.join(publicDir, 'search_index.json');
+
+      try {
+          await fs.writeFile(indexPath, serializedIndex, 'utf-8');
+          console.log(`Lunr.js index created at ${indexPath}`);
+      } catch (error) {
+          console.error("Error creating Lunr.js index:", error);
+      }
+
+      return serializedIndex;
+    };
+
+
+    export default makeSource({
+      contentDirPath: 'content',
+      documentTypes: [Post],
+      onSuccess: async (allPosts) => {
+        // Build the Lunr index after contentlayer has finished processing
+        await buildLunrIndex(allPosts);
+      }
+    })
+    ```
+
+    **Explanation:**
+
+    *   We import `lunr`, `fs/promises`, and `path`.
+    *   The `buildLunrIndex` function takes the `allPosts` array and creates a Lunr.js index.
+    *   We define the fields to be indexed: `title`, `summary`, and `body` (which contains the extracted content).
+    *   We serialize the index to JSON using `JSON.stringify(idx)`.
+    *   We write the JSON index to a file in the `public` directory (e.g., `public/search_index.json`).  Make sure this directory exists in your project.  This is a crucial step; without writing the index to disk, the client-side code won't be able to load it.
+    *   We use the `onSuccess` hook in `makeSource` to call `buildLunrIndex` after Contentlayer has finished processing the content.  This ensures that the index is rebuilt whenever your content changes.
+    *   This code assumes you have a `public` directory in your Next.js project.
+
+3.  **Create a Search Component:**
+
+    Create a component to handle the search input and display results.
+
+    ```jsx
+    // components/Search.jsx
+    import { useState, useEffect } from 'react';
+    import lunr from 'lunr';
+    import Link from 'next/link';
+
+    const Search = () => {
+      const [searchTerm, setSearchTerm] = useState('');
+      const [searchResults, setSearchResults] = useState([]);
+      const [index, setIndex] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        const loadIndex = async () => {
+          try {
+            const response = await fetch('/search_index.json');
+            const indexData = await response.json();
+            const loadedIndex = lunr.Index.load(indexData);
+            setIndex(loadedIndex);
+            setLoading(false);
+          } catch (error) {
+            console.error("Error loading search index:", error);
+            setLoading(false);
+          }
+        };
+
+        loadIndex();
+      }, []);
+
+      useEffect(() => {
+        if (!searchTerm || loading || !index) {
+          setSearchResults([]);
+          return;
+        }
+
+        try {
+          const results = index.search(searchTerm);
+          setSearchResults(results);
+        } catch (error) {
+          console.error("Error during search:", error);
+          setSearchResults([]);
+        }
+
+      }, [searchTerm, index, loading]);
+
+      return (
+        <div>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            disabled={loading}
+          />
+
+          {loading && <p>Loading search index...</p>}
+
+          <ul>
+            {searchResults.map((result) => (
+              <li key={result.ref}>
+                <Link href={`/blog/${result.ref}`}>
+                  <a>
+                    {/* You'll need to fetch the post data using result.ref to display the title and summary */}
+                    Post ID: {result.ref} (Implement data fetching here)
+                  </a>
+                </Link>
+              </li>
+            ))}
+            {searchResults.length === 0 && searchTerm && !loading && <li>No results found.</li>}
+          </ul>
+        </div>
+      );
+    };
+
+    export default Search;
+    ```
+
+    **Explanation:**
+
+    *   We use `useState` to manage the search term, results, and the Lunr.js index.
+    *   `useEffect` is used to load the search index from `public/search_index.json` when the component mounts.  We use `fetch` to retrieve the JSON data.  The  `lunr.Index.load(indexData)` function deserializes the index from the JSON data.
+    *   Another `useEffect` hook performs the search when the search term changes.
+    *   `index.search(searchTerm)` executes the search.  Importantly, Lunr.js returns an array of references (`result.ref`) to the original documents (using the `id` we set in the index).  You'll need to fetch the actual post data based on these references to display the title and summary.  **This is a crucial difference from Fuse.js.**
+    *  A loading state is included to prevent searches before the index is loaded.
+
+4.  **Integrate the Search Component:**
+
+    Import the `Search` component into your page and render it.  Note that unlike the Fuse.js example, you no longer pass in `allPosts` because the search index is loaded directly within the `Search` component.
+
+    ```jsx
+    // pages/index.jsx
+    import Search from '../components/Search';
+
+    export default function Home() {
+      return (
+        <div>
+          <Search />
+          {/* Your other content */}
+        </div>
+      );
+    }
+    ```
+
+**Important Considerations for Lunr.js:**
+
+*   **Data Fetching:**  As mentioned, Lunr.js returns references to documents, not the documents themselves. You'll need to implement a mechanism to fetch the actual post data based on the `result.ref` values.  This could involve querying your Contentlayer data store (e.g., filtering the `allPosts` array) or fetching data from an API.
+*   **Rebuilding the Index:** The index needs to be rebuilt whenever your content changes.  Our Contentlayer config takes care of this.
+*   **Stemming and Stop Words:**  Lunr.js supports stemming (reducing words to their root form) and stop word removal (removing common words like "the", "a", "is").  You can customize the Lunr.js index builder in `contentlayer.config.js` to enable these features for more accurate search results.
+
+**Pros of Lunr.js:**
+
+*   **More features than Fuse.js:** Supports stemming, stop words, and other advanced search features.
+*   **Pre-built index:** Can improve initial search performance by building the index on the server.
+*   **Client-side:** Still runs in the browser.
+
+**Cons of Lunr.js:**
+
+*   **More complex implementation:** Requires more setup and configuration than Fuse.js.
+*   **Data fetching:** Requires implementing a mechanism to fetch the actual post data based on search results.
+*   **Performance:**  Still client-side, so performance can be an issue with very large datasets.
+
+## 3. Implementing Full-Text Search with an External Search Service (Server-Side)
+
+For large, high-traffic websites, relying on a dedicated search service like Algolia, ElasticSearch, or Meilisearch is often the best solution. These services are designed to handle massive amounts of data and provide lightning-fast search results.  They involve setting up a server-side API to interact with the search service.
+
+**General Steps (Conceptual):**
+
+1.  **Choose a Search Service:** Select a search service that meets your needs.  Algolia is a popular managed solution, while ElasticSearch and Meilisearch are open-source options that you can self-host.
+2.  **Create an Account and Index:**  Set up an account with the chosen service and create an index to store your data.
+3.  **Index Your Content:**  Create a script (e.g., in your Contentlayer `onSuccess` hook) to index your content in the search service. This typically involves sending data to the service's API.
+4.  **Create a Server-Side API:**  Build an API endpoint (e.g., using Next.js API routes) that accepts search queries and forwards them to the search service.
+5.  **Create a Search Component (Client-Side):** Create a component that calls the API endpoint and displays the search results.
+
+**Example (Conceptual - Algolia):**
+
+*   **Install Algolia client:**
+
+    ```bash
+    npm install algoliasearch
+    ```
+
+*   **Indexing (Contentlayer config):**
+
+    ```typescript jsx
+    // contentlayer.config.ts
+    import { defineDocumentType, makeSource } from 'contentlayer/source-files'
+    import algoliasearch from 'algoliasearch';
+
+    const algoliaClient = algoliasearch('YOUR_ALGOLIA_APP_ID', 'YOUR_ALGOLIA_ADMIN_API_KEY');
+    const index = algoliaClient.initIndex('your_index_name');
+
+    export const Post = defineDocumentType(() => ({
+      // ... (your Post definition) ...
+    }))
+
+    export default makeSource({
+      // ...
+      onSuccess: async (allPosts) => {
+        const records = allPosts.map(post => ({
+          objectID: post._id,
+          title: post.title,
+          summary: post.summary,
+          content: post.searchIndex, // Extracted content
+          url: post.url
+        }));
+
+        try {
+          await index.saveObjects(records);
+          console.log('Content indexed in Algolia');
+        } catch (error) {
+          console.error('Error indexing content in Algolia:', error);
+        }
+      }
+    })
+    ```
+
+*   **API Endpoint (Next.js API Route):**
+
+    ```javascript
+    // pages/api/search.js
+    import algoliasearch from 'algoliasearch';
+
+    const client = algoliasearch('YOUR_ALGOLIA_APP_ID', 'YOUR_ALGOLIA_SEARCH_ONLY_API_KEY');
+    const index = client.initIndex('your_index_name');
+
+    export default async function handler(req, res) {
+      const { query } = req.query;
+
+      try {
+        const { hits } = await index.search(query);
+        res.status(200).json(hits);
+      } catch (error) {
+        console.error('Error searching Algolia:', error);
+        res.status(500).json({ error: 'Failed to search' });
+      }
+    }
+    ```
+
+*   **Search Component (Client-Side):**
+
+    ```jsx
+    // components/Search.jsx
+    import { useState, useEffect } from 'react';
+    import Link from 'next/link';
+
+    const Search = () => {
+      const [searchTerm, setSearchTerm] = useState('');
+      const [searchResults, setSearchResults] = useState([]);
+
+      useEffect(() => {
+        const fetchData = async () => {
+          if (!searchTerm) {
+            setSearchResults([]);
+            return;
+          }
+
+          try {
+            const response = await fetch(`/api/search?query=${searchTerm}`);
+            const data = await response.json();
+            setSearchResults(data);
+          } catch (error) {
+            console.error('Error fetching search results:', error);
+            setSearchResults([]);
+          }
+        };
+
+        fetchData();
+      }, [searchTerm]);
+
+      return (
+        <div>
+          <input
+            type="text"
+            placeholder="Search..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+
+          <ul>
+            {searchResults.map((result) => (
+              <li key={result.objectID}>
+                <Link href={result.url}>
+                  <a>
+                    {result.title}
+                    <p>{result.summary}</p>
+                  </a>
+                </Link>
+              </li>
+            ))}
+            {searchResults.length === 0 && searchTerm && <li>No results found.</li>}
+          </ul>
+        </div>
+      );
+    };
+
+    export default Search;
+    ```
+
+**Pros of External Search Services:**
+
+*   **Scalability:** Designed to handle massive amounts of data and high traffic.
+*   **Performance:**  Fast search results, even with large datasets.
+*   **Advanced features:**  Support for stemming, faceting, geo-search, and other advanced features.
+*   **Managed solutions:** Algolia provides a fully managed solution, reducing operational overhead.
+
+**Cons of External Search Services:**
+
+*   **Complexity:**  More complex setup and configuration than client-side solutions.
+*   **Cost:**  Can be expensive, especially for high-traffic websites.
+*   **Requires a backend:** You need to build an API to interact with the search service.
+
+## Conclusion
+
+Implementing full-text search in your Contentlayer-powered Next.js website can significantly improve user experience and engagement.  Choose the approach that best suits your needs, considering the size of your content, performance requirements, and budget.  Remember to prioritize performance, especially for large websites, and consider using a dedicated search service if necessary.  Good luck!
