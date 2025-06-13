@@ -100,6 +100,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         content="Wordpress, Data Structures, Algorithms, Python, Flask, Django, Java, C, C++, JavaScript, Android Development, SQL, Data Science, Machine Learning, PHP, Web Development, System Design, Tutorial, Technical Blogs, Interview Experience, Interview Preparation, Programming, Competitive Programming, HTML, CSS, Bootstrap, Tailwind Css, React, React Native, NextJs, VueJs, NuxtJs, NodeJS, Express, Quiz, Computer Science, Programming Examples, Puzzles, Mathematics"
       />
       <meta name="google-adsense-account" content="ca-pub-6400001587606945" />
+      <meta name="google-site-verification" content="Dc8MJCcjpwVrhZ1NORj8S5X8wLuPjVKlXzvhpIx7QrQ" />
 
       <body className="bg-white pl-[calc(100vw-100%)] text-black antialiased dark:bg-gray-950 dark:text-white">
         <ThemeProviders>
